@@ -1,0 +1,54 @@
+{% extends "web/base.html" %}
+
+{% block title %}Загрузка Продаж{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center mt-5">
+    <div class="col-md-6 pb-4">
+        <h2 class="text-center mb-4" style="color: #FC4445;">💰 Загрузка отчета о продажах</h2>
+        
+        <div class="card" style="border-color: #55BCC9;">
+            <div class="card-header" style="background-color: #55BCC9; color: white;">
+                Загрузите Excel или CSV файл с продажами
+            </div>
+            <div class="card-body p-4 bg-white">
+                <form method="post" enctype="multipart/form-data">
+                    {% csrf_token %}
+                    
+                    {% for field in form %}
+                    <div class="mb-4">
+                        <label class="form-label fw-bold" for="{{ field.id_for_label }}">{{ field.label }}</label>
+                        {{ field }}
+                        {% if field.help_text %}
+                            <div class="form-text">{{ field.help_text }}</div>
+                        {% endif %}
+                        {% for error in field.errors %}
+                            <div class="text-danger mt-1 small">{{ error }}</div>
+                        {% endfor %}
+                    </div>
+                    {% endfor %}
+                    
+                    <div class="d-grid mt-4">
+                        <button type="submit" class="btn btn-custom-primary btn-lg fw-bold py-2">Списать проданное из инвентаря</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        
+        <div class="alert mt-4" style="background-color: white; border: 1px dashed #FC4445; border-radius:10px;">
+            <h6 style="color: #FC4445;" class="fw-bold">Ожидаемый формат колонок (Свободная продажа):</h6>
+            <div class="table-responsive mt-2">
+                <table class="table table-sm table-bordered text-muted small">
+                    <tr style="background-color:#fff5f5">
+                        <td>Артикул</td>
+                        <td>Название товара</td>
+                        <td>Доход (цена продажи)</td>
+                        <td>Количество</td>
+                    </tr>
+                </table>
+            </div>
+            <p class="small text-muted mb-0 mt-2">При загрузке автоматически вычитается остаток со склада и рассчитывается прибыль (Доход минус Себестоимость).</p>
+        </div>
+    </div>
+</div>
+{% endblock %}

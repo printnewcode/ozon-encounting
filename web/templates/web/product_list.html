@@ -1,0 +1,74 @@
+{% extends "web/base.html" %}
+
+{% block title %}Товары на складе{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>📦 Товары на складе</h2>
+    <div>
+        <a href="{% url 'upload_supply' %}" class="btn px-4 py-2 me-2" style="background-color: #3FEEE6; border:none; color:#1a6663; font-weight:600; box-shadow: 0 4px 6px rgba(63, 238, 230, 0.3);">⬇️ Загрузить Поставку</a>
+        <a href="{% url 'upload_sales' %}" class="btn btn-custom-primary px-4 py-2">📈 Загрузить Продажи</a>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-body p-0">
+        <div class="table-responsive">
+            <table class="table table-custom table-bordered align-middle">
+                <thead>
+                    <tr>
+                        <th class="px-3">Артикул</th>
+                        <th>Название</th>
+                        <th>Статус</th>
+                        <th class="text-center">Остаток</th>
+                        <th>Себестоимость</th>
+                        <th>Доход / Прибыль</th>
+                        <th>Дата созд./обновления</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for product in products %}
+                    <tr>
+                        <td class="fw-bold px-3" style="color: #55BCC9;">{{ product.article }}</td>
+                        <td>{{ product.name }}</td>
+                        <td>
+                            <span class="badge status-badge {{ product.status }}">
+                                {{ product.get_status_display }}
+                            </span>
+                        </td>
+                        <td class="text-center font-monospace fs-5">
+                            {{ product.quantity }}
+                        </td>
+                        <td>
+                            Себ.: <strong>{{ product.cost_price|default:"0.00" }}</strong> ₽<br>
+                            <small class="text-muted">(Зак: {{ product.purchase_price }} + Дост: {{ product.delivery_cost }})</small>
+                        </td>
+                        <td>
+                            {% if product.sales.exists %}
+                                {% with latest_sale=product.sales.last %}
+                                    <span style="color: #1a6663; font-weight: bold;">+ {{ latest_sale.profit|default:"-" }} ₽</span> <br>
+                                    <small class="text-muted">(выручка: {{ latest_sale.income|default:"-" }} ₽)</small>
+                                {% endwith %}
+                            {% else %}
+                                <span class="text-muted">- нет продаж -</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <small class="text-muted">{{ product.updated_at|date:"d.m.Y H:i" }}</small>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="7" class="text-center p-5 text-muted">
+                            <h5>В базе пока нет товаров.</h5>
+                            <p>Загрузите файл поставки формата .xlsx, .xls или .csv, чтобы начать.</p>
+                            <a href="{% url 'upload_supply' %}" class="btn mt-3" style="background-color: #3FEEE6; border:none; color:#1a6663; font-weight:600;">Загрузить Поставку</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}
