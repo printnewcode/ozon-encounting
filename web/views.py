@@ -1,12 +1,77 @@
 import io
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from urllib.parse import quote
 
 import pandas as pd
 from django.db.models import F
+from django.http import HttpResponse
 from django.shortcuts import render, redirect
 from django.contrib import messages
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.utils import get_column_letter
+
 from .models import Product, SaleRecord
 from .forms import SupplyUploadForm, SalesUploadForm
+
+
+def export_filename(name):
+    timestamp = datetime.now().strftime('%Y-%m-%d')
+    return f'{name}_{timestamp}.xlsx'
+
+
+def workbook_response(workbook, filename):
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+
+    response = HttpResponse(
+        buffer.getvalue(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+    response['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(filename)}"
+    return response
+
+
+def style_export_sheet(sheet, widths):
+    header_fill = PatternFill('solid', fgColor='0EA5E9')
+    header_font = Font(color='FFFFFF', bold=True)
+    border_color = 'E5E7EB'
+    thin_border = Border(
+        left=Side(style='thin', color=border_color),
+        right=Side(style='thin', color=border_color),
+        top=Side(style='thin', color=border_color),
+        bottom=Side(style='thin', color=border_color),
+    )
+
+    sheet.freeze_panes = 'A2'
+    sheet.auto_filter.ref = sheet.dimensions
+
+    for cell in sheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.border = thin_border
+
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical='center')
+
+    for index, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(index)].width = width
+
+    for row in sheet.iter_rows():
+        sheet.row_dimensions[row[0].row].height = 22
+
+    for column in sheet.iter_cols():
+        header = column[0].value
+        for cell in column[1:]:
+            if header in ('Стоимость в закупке', 'Доставка', 'Себестоимость', 'Доход', 'Прибыль'):
+                cell.number_format = '#,##0.00'
+            elif header == 'Дата продажи':
+                cell.number_format = 'DD.MM.YYYY'
 
 def parse_file(file):
     """ Вспомогательная функция для парсинга Excel/CSV файлов через pandas. """
@@ -153,48 +218,54 @@ def upload_sales(request):
 
 def product_list(request):
     groups_dict = {}
+    status_order = {
+        'in_stock': 0,
+        'in_sale': 1,
+        'sold': 2,
+    }
+
+    def get_group(article, status_key, name, status_label):
+        group_key = (article, status_key)
+        if group_key not in groups_dict:
+            groups_dict[group_key] = {
+                'article': article,
+                'name': name,
+                'status_key': status_key,
+                'status_label': status_label,
+                'rows': [],
+                'count': 0,
+                'total_income': Decimal('0'),
+                'total_profit': Decimal('0'),
+                'has_sales': False,
+                'sort_status': status_order.get(status_key, 99),
+            }
+        return groups_dict[group_key]
 
     # --- 1. Fetch Unsold Products ---
     unsold = Product.objects.filter(status__in=['in_stock', 'in_sale']).order_by('article', 'created_at')
     for p in unsold:
-        art = p.article
-        if art not in groups_dict:
-            groups_dict[art] = {
-                'article': art,
-                'name': p.name,
-                'rows': [],
-                'count': 0,
-                'total_profit': Decimal('0'),
-                'has_sales': False
-            }
-        
-        groups_dict[art]['rows'].append({
-            'article':      p.article,
-            'name':         p.name,
-            'status_key':   p.status,
-            'status_label': p.get_status_display(),
-            'cost_price':   p.cost_price,
-            'income':       None,
-            'profit':       None,
-            'sale_date':    None,
-        })
-        groups_dict[art]['count'] += 1
+        group = get_group(p.article, p.status, p.name, p.get_status_display())
+        remaining_count = max(p.quantity, 1)
+
+        for _ in range(remaining_count):
+            group['rows'].append({
+                'article':      p.article,
+                'name':         p.name,
+                'status_key':   p.status,
+                'status_label': p.get_status_display(),
+                'cost_price':   p.cost_price,
+                'income':       None,
+                'profit':       None,
+                'sale_date':    None,
+            })
+            group['count'] += 1
 
     # --- 2. Fetch Sale Records ---
     sales = SaleRecord.objects.select_related('product').order_by('article', 'sale_date', 'created_at')
     for s in sales:
-        art = s.article
-        if art not in groups_dict:
-            groups_dict[art] = {
-                'article': art,
-                'name': s.name,
-                'rows': [],
-                'count': 0,
-                'total_profit': Decimal('0'),
-                'has_sales': False
-            }
-        
-        groups_dict[art]['rows'].append({
+        group = get_group(s.article, 'sold', s.name, 'Продан')
+
+        group['rows'].append({
             'article':      s.article,
             'name':         s.name,
             'status_key':   'sold',
@@ -204,32 +275,74 @@ def product_list(request):
             'profit':       s.profit,
             'sale_date':    s.sale_date,
         })
-        groups_dict[art]['count'] += 1
+        group['count'] += 1
+        if s.income:
+            group['total_income'] += s.income
         if s.profit:
-            groups_dict[art]['total_profit'] += s.profit
-        groups_dict[art]['has_sales'] = True
+            group['total_profit'] += s.profit
+        group['has_sales'] = True
 
     # --- 3. Finalize Groups ---
-    # Sort articles alphabetically (or any other default)
-    sorted_articles = sorted(groups_dict.keys())
     groups = []
-    for art in sorted_articles:
-        group = groups_dict[art]
-        
-        # Decide what to show on the header
-        # If there are multiple statuses, show "Смешанный" or similar
-        statuses = set(r['status_key'] for r in group['rows'])
-        if len(statuses) == 1:
-            group['header_status_key'] = list(statuses)[0]
-            group['header_status_label'] = group['rows'][0]['status_label']
-        else:
-            group['header_status_key'] = 'mixed'
-            group['header_status_label'] = 'Разные статусы'
-        
-        # Summary prices for header (showing first one or a range)
+    for group in sorted(groups_dict.values(), key=lambda item: (item['sort_status'], item['article'], item['name'])):
+        group['header_status_key'] = group['status_key']
+        group['header_status_label'] = group['status_label']
         group['header_cost'] = group['rows'][0]['cost_price']
-        
         groups.append(group)
 
     return render(request, 'web/product_list.html', {'groups': groups})
+
+
+def export_sales_report(request):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = 'Отчет продаж'
+    sheet.append(['Артикул', 'Название', 'Состояние', 'Себестоимость', 'Доход', 'Прибыль', 'Дата продажи'])
+
+    sales = SaleRecord.objects.select_related('product').order_by('sale_date', 'created_at', 'article')
+    for sale in sales:
+        sheet.append([
+            sale.article,
+            sale.name,
+            'Продан',
+            sale.product.cost_price,
+            sale.income,
+            sale.profit,
+            sale.sale_date,
+        ])
+
+    style_export_sheet(sheet, [20, 36, 16, 16, 14, 14, 16])
+    return workbook_response(workbook, export_filename('Отчет_продаж'))
+
+
+def export_stock_balance(request):
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = 'Учет остатков'
+    sheet.append([
+        'Артикул',
+        'Название',
+        'Стоимость в закупке',
+        'Доставка',
+        'Себестоимость',
+        'На складе',
+        'В продаже',
+    ])
+
+    products = Product.objects.order_by('article', 'name')
+    for product in products:
+        in_stock = product.quantity if product.status == 'in_stock' else 0
+        in_sale = product.quantity if product.status == 'in_sale' else 0
+        sheet.append([
+            product.article,
+            product.name,
+            product.purchase_price,
+            product.delivery_cost,
+            product.cost_price,
+            in_stock,
+            in_sale,
+        ])
+
+    style_export_sheet(sheet, [20, 36, 20, 14, 16, 14, 14])
+    return workbook_response(workbook, export_filename('Учет_остатков'))
 

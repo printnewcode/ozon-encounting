@@ -11,9 +11,11 @@
 <div class="page-header">
     <div>
         <h1 class="page-title">Учёт товаров</h1>
-        <p class="page-subtitle">Все позиции: остатки и история продаж (сгруппировано)</p>
+        <p class="page-subtitle">Остатки и история продаж</p>
     </div>
-    <div style="display:flex; gap:10px;">
+    <div class="page-actions">
+        <a href="{% url 'export_stock_balance' %}" class="btn-secondary-saas">📦 Учет остатков</a>
+        <a href="{% url 'export_sales_report' %}" class="btn-secondary-saas">📄 Отчет продаж</a>
         <a href="{% url 'upload_supply' %}" class="btn-secondary-saas">⬇️ Загрузить поставку</a>
         <a href="{% url 'upload_sales' %}" class="btn-primary-saas">📈 Загрузить продажи</a>
     </div>
@@ -25,7 +27,7 @@
             <tr>
                 <th class="sortable" data-col="0" data-type="str">Артикул</th>
                 <th class="sortable" data-col="1" data-type="str">Название</th>
-                <th class="sortable" data-col="2" data-type="str">Состояние</th>
+                <th class="sortable asc" data-col="2" data-type="str">Состояние</th>
                 <th class="sortable" data-col="3" data-type="num">Себестоимость</th>
                 <th class="sortable" data-col="4" data-type="num">Доход</th>
                 <th class="sortable" data-col="5" data-type="num">Прибыль</th>
@@ -34,13 +36,13 @@
         </thead>
         <tbody id="productsBody">
             {% for group in groups %}
-            <tr class="group-header" data-article="{{ group.article }}">
-                <td data-sort="{{ group.article }}">
-                    <span class="expand-icon">▶</span>
-                    <span class="cell-article">{{ group.article }}</span>
+            <tr class="group-header row-status-{{ group.header_status_key }}{% if group.header_status_key == 'sold' %}{% if group.total_profit < 0 %} row-profit-negative{% else %} row-profit-positive{% endif %}{% endif %}" data-article="{{ group.article }}">
+                <td data-sort="{{ group.article }}" title="{{ group.article }}">
+                    <span class="expand-icon" aria-hidden="true"></span>
+                    <span class="cell-article text-clip">{{ group.article }}</span>
                 </td>
-                <td data-sort="{{ group.name }}">
-                    <span class="cell-name">{{ group.name }}</span>
+                <td data-sort="{{ group.name }}" title="{{ group.name }}">
+                    <span class="cell-name text-clip">{{ group.name }}</span>
                     <span class="count-badge">{{ group.count }} зап.</span>
                 </td>
                 <td data-sort="{{ group.header_status_label }}">
@@ -51,8 +53,8 @@
                 <td data-sort="{{ group.header_cost }}">
                     {{ group.header_cost }}
                 </td>
-                <td data-sort="-1">
-                    {% if group.has_sales %}<span class="text-muted">...</span>{% endif %}
+                <td data-sort="{% if group.has_sales %}{{ group.total_income }}{% else %}-1{% endif %}">
+                    {% if group.has_sales %}{{ group.total_income }}{% endif %}
                 </td>
                 <td data-sort="{{ group.total_profit }}">
                     {% if group.has_sales %}
@@ -66,31 +68,48 @@
                 <td data-sort="0"></td>
             </tr>
             {% for row in group.rows %}
-            <tr class="child-row child-of-{{ group.article }}">
-                <td></td>{# Article empty for children to emphasize indent #}
-                <td>
-                    <span class="text-secondary" style="font-size: 12px;">{{ row.name }}</span>
+            <tr class="child-row row-status-{{ row.status_key }}{% if row.status_key == 'sold' %}{% if row.profit < 0 %} row-profit-negative{% else %} row-profit-positive{% endif %}{% endif %}{% if forloop.counter|divisibleby:2 %} child-row-alt{% endif %}">
+                <td data-sort="{{ row.article }}" title="{{ row.article }}">
+                    <div class="child-cell-content">
+                        <span class="child-spacer" aria-hidden="true"></span>
+                        <span class="cell-article text-clip">{{ row.article }}</span>
+                    </div>
                 </td>
-                <td>
-                    <span class="badge-status badge-{{ row.status_key }}">
-                        {{ row.status_label }}
-                    </span>
+                <td data-sort="{{ row.name }}" title="{{ row.name }}">
+                    <div class="child-cell-content">
+                        <span class="cell-name text-clip">{{ row.name }}</span>
+                    </div>
                 </td>
-                <td>{{ row.cost_price }}</td>
+                <td data-sort="{{ row.status_label }}">
+                    <div class="child-cell-content">
+                        <span class="badge-status badge-{{ row.status_key }}">
+                            {{ row.status_label }}
+                        </span>
+                    </div>
+                </td>
+                <td data-sort="{{ row.cost_price }}">
+                    <div class="child-cell-content">{{ row.cost_price }}</div>
+                </td>
                 <td data-sort="{% if row.income is not None %}{{ row.income }}{% else %}-1{% endif %}">
-                    {% if row.income is not None %}{{ row.income }}{% endif %}
+                    <div class="child-cell-content">
+                        {% if row.income is not None %}{{ row.income }}{% endif %}
+                    </div>
                 </td>
                 <td data-sort="{% if row.profit is not None %}{{ row.profit }}{% else %}-999999{% endif %}">
-                    {% if row.profit is not None %}
-                        {% if row.profit < 0 %}
-                            <span class="profit-negative">{{ row.profit }}</span>
-                        {% else %}
-                            <span class="profit-positive">{{ row.profit }}</span>
+                    <div class="child-cell-content">
+                        {% if row.profit is not None %}
+                            {% if row.profit < 0 %}
+                                <span class="profit-negative">{{ row.profit }}</span>
+                            {% else %}
+                                <span class="profit-positive">{{ row.profit }}</span>
+                            {% endif %}
                         {% endif %}
-                    {% endif %}
+                    </div>
                 </td>
-                <td style="font-size:13px; color:var(--text-secondary); white-space:nowrap;">
-                    {% if row.sale_date %}{{ row.sale_date|date:"d.m.Y" }}{% endif %}
+                <td data-sort="{% if row.sale_date %}{{ row.sale_date|date:'Y-m-d' }}{% else %}0{% endif %}">
+                    <div class="child-cell-content">
+                        {% if row.sale_date %}{{ row.sale_date|date:"d.m.Y" }}{% endif %}
+                    </div>
                 </td>
             </tr>
             {% endfor %}

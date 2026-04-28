@@ -30,6 +30,13 @@
             <a href="{% url 'upload_sales' %}">
                 <span class="nav-icon">📈</span> Загрузка продаж
             </a>
+            <div class="nav-label" style="margin-top: 8px;">Выгрузки</div>
+            <a href="{% url 'export_sales_report' %}">
+                <span class="nav-icon">📄</span> Отчет продаж
+            </a>
+            <a href="{% url 'export_stock_balance' %}">
+                <span class="nav-icon">📦</span> Учет остатков
+            </a>
         </nav>
     </aside>
 
