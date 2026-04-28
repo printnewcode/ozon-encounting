@@ -1,74 +1,167 @@
 {% extends "web/base.html" %}
 
-{% block title %}Товары на складе{% endblock %}
+{% block title %}Учёт товаров — Jget{% endblock %}
 
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h2>📦 Товары на складе</h2>
+<div class="page-header">
     <div>
-        <a href="{% url 'upload_supply' %}" class="btn px-4 py-2 me-2" style="background-color: #3FEEE6; border:none; color:#1a6663; font-weight:600; box-shadow: 0 4px 6px rgba(63, 238, 230, 0.3);">⬇️ Загрузить Поставку</a>
-        <a href="{% url 'upload_sales' %}" class="btn btn-custom-primary px-4 py-2">📈 Загрузить Продажи</a>
+        <h1 class="page-title">Учёт товаров</h1>
+        <p class="page-subtitle">Все позиции: остатки и история продаж</p>
+    </div>
+    <div style="display:flex; gap:10px;">
+        <a href="{% url 'upload_supply' %}" class="btn-secondary-saas">⬇️ Загрузить поставку</a>
+        <a href="{% url 'upload_sales' %}" class="btn-primary-saas">📈 Загрузить продажи</a>
     </div>
 </div>
 
-<div class="card">
-    <div class="card-body p-0">
-        <div class="table-responsive">
-            <table class="table table-custom table-bordered align-middle">
-                <thead>
-                    <tr>
-                        <th class="px-3">Артикул</th>
-                        <th>Название</th>
-                        <th>Статус</th>
-                        <th class="text-center">Остаток</th>
-                        <th>Себестоимость</th>
-                        <th>Доход / Прибыль</th>
-                        <th>Дата созд./обновления</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for product in products %}
-                    <tr>
-                        <td class="fw-bold px-3" style="color: #55BCC9;">{{ product.article }}</td>
-                        <td>{{ product.name }}</td>
-                        <td>
-                            <span class="badge status-badge {{ product.status }}">
-                                {{ product.get_status_display }}
-                            </span>
-                        </td>
-                        <td class="text-center font-monospace fs-5">
-                            {{ product.quantity }}
-                        </td>
-                        <td>
-                            Себ.: <strong>{{ product.cost_price|default:"0.00" }}</strong> ₽<br>
-                            <small class="text-muted">(Зак: {{ product.purchase_price }} + Дост: {{ product.delivery_cost }})</small>
-                        </td>
-                        <td>
-                            {% if product.sales.exists %}
-                                {% with latest_sale=product.sales.last %}
-                                    <span style="color: #1a6663; font-weight: bold;">+ {{ latest_sale.profit|default:"-" }} ₽</span> <br>
-                                    <small class="text-muted">(выручка: {{ latest_sale.income|default:"-" }} ₽)</small>
-                                {% endwith %}
-                            {% else %}
-                                <span class="text-muted">- нет продаж -</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            <small class="text-muted">{{ product.updated_at|date:"d.m.Y H:i" }}</small>
-                        </td>
-                    </tr>
-                    {% empty %}
-                    <tr>
-                        <td colspan="7" class="text-center p-5 text-muted">
-                            <h5>В базе пока нет товаров.</h5>
-                            <p>Загрузите файл поставки формата .xlsx, .xls или .csv, чтобы начать.</p>
-                            <a href="{% url 'upload_supply' %}" class="btn mt-3" style="background-color: #3FEEE6; border:none; color:#1a6663; font-weight:600;">Загрузить Поставку</a>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-    </div>
+<style>
+    .sortable {
+        cursor: pointer;
+        user-select: none;
+        position: relative;
+        padding-right: 22px !important;
+    }
+    .sortable:hover { color: #aaa; }
+    .sortable::after       { content: '↕'; position: absolute; right: 6px; opacity: 0.35; font-size: 11px; }
+    .sortable.asc::after   { content: '↑'; opacity: 0.8; }
+    .sortable.desc::after  { content: '↓'; opacity: 0.8; }
+
+    /* Чередование фона групп (один артикул = одна группа) */
+    tr.group-alt { background-color: #F3F6F9; }
+    tr.group-alt:hover { background-color: #eaeff5 !important; }
+
+    /* Граница сверху при смене артикула */
+    tr.group-start td { border-top: 2px solid #D1D9E0 !important; }
+
+    /* Подсветка строк по статусу — приоритет выше группы */
+    tr.row-in_sale  { background-color: #FFFBEA !important; }
+    tr.row-sold-neg { background-color: #FEECEC !important; }
+    tr.row-sold-neg:hover { background-color: #fddada !important; }
+    tr.row-in_sale:hover  { background-color: #FFF3C4 !important; }
+</style>
+
+<div class="data-card">
+    <table class="table-saas" id="productsTable">
+        <thead>
+            <tr>
+                <th class="sortable" data-col="0" data-type="str">Артикул</th>
+                <th class="sortable" data-col="1" data-type="str">Название</th>
+                <th class="sortable" data-col="2" data-type="str">Состояние</th>
+                <th class="sortable" data-col="3" data-type="num">Себестоимость</th>
+                <th class="sortable" data-col="4" data-type="num">Доход</th>
+                <th class="sortable" data-col="5" data-type="num">Прибыль</th>
+                <th class="sortable" data-col="6" data-type="date">Дата продажи</th>
+            </tr>
+        </thead>
+        <tbody id="productsBody">
+            {% for row in rows %}
+            {% if row.profit is not None and row.profit < 0 %}
+            <tr class="row-sold-neg{% if row.is_group_start %} group-start{% endif %}">
+            {% elif row.status_key == 'in_sale' %}
+            <tr class="row-in_sale{% if row.is_group_start %} group-start{% endif %}">
+            {% elif row.group_idx == 1 %}
+            <tr class="group-alt{% if row.is_group_start %} group-start{% endif %}">
+            {% else %}
+            <tr class="{% if row.is_group_start %}group-start{% endif %}">
+            {% endif %}
+                <td data-sort="{{ row.article }}">
+                    <span class="cell-article">{{ row.article }}</span>
+                </td>
+                <td data-sort="{{ row.name }}">
+                    <span class="cell-name">{{ row.name }}</span>
+                </td>
+                <td data-sort="{{ row.status_label }}">
+                    <span class="badge-status badge-{{ row.status_key }}">
+                        {{ row.status_label }}
+                    </span>
+                </td>
+                <td data-sort="{{ row.cost_price }}">
+                    {{ row.cost_price }}
+                </td>
+                <td data-sort="{% if row.income is not None %}{{ row.income }}{% else %}-1{% endif %}">
+                    {% if row.income is not None %}{{ row.income }}{% endif %}
+                </td>
+                <td data-sort="{% if row.profit is not None %}{{ row.profit }}{% else %}-999999{% endif %}">
+                    {% if row.profit is not None %}
+                        {% if row.profit < 0 %}
+                            <span class="profit-negative">{{ row.profit }}</span>
+                        {% else %}
+                            <span class="profit-positive">{{ row.profit }}</span>
+                        {% endif %}
+                    {% endif %}
+                </td>
+                <td data-sort="{% if row.sale_date %}{{ row.sale_date|date:'Y-m-d' }}{% else %}0{% endif %}"
+                    style="font-size:13px; color:var(--text-secondary); white-space:nowrap;">
+                    {% if row.sale_date %}{{ row.sale_date|date:"d.m.Y" }}{% endif %}
+                </td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="7">
+                    <div class="empty-state">
+                        <div class="empty-icon">📭</div>
+                        <h5>Товаров пока нет</h5>
+                        <p>Загрузите Excel или CSV файл с поставкой, чтобы начать работу.</p>
+                        <a href="{% url 'upload_supply' %}" class="btn-secondary-saas" style="margin-top:12px; display:inline-flex;">
+                            ⬇️ Загрузить поставку
+                        </a>
+                    </div>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
 </div>
+
+<script>
+(function () {
+    let lastCol = null, asc = true;
+
+    document.querySelectorAll('.sortable').forEach(function (th) {
+        th.addEventListener('click', function () {
+            const col  = parseInt(th.dataset.col);
+            const type = th.dataset.type;
+
+            if (lastCol === col) { asc = !asc; }
+            else {
+                asc = true;
+                document.querySelectorAll('.sortable').forEach(h => h.classList.remove('asc', 'desc'));
+            }
+            th.classList.toggle('asc', asc);
+            th.classList.toggle('desc', !asc);
+            lastCol = col;
+
+            const tbody = document.getElementById('productsBody');
+            const rows  = Array.from(tbody.querySelectorAll('tr'));
+
+            rows.sort(function (a, b) {
+                const cellA = a.cells[col];
+                const cellB = b.cells[col];
+                if (!cellA || !cellB) return 0;
+
+                const rawA = (cellA.dataset.sort !== undefined ? cellA.dataset.sort : cellA.textContent).trim();
+                const rawB = (cellB.dataset.sort !== undefined ? cellB.dataset.sort : cellB.textContent).trim();
+
+                let valA, valB;
+                if (type === 'num') {
+                    valA = parseFloat(rawA) || -Infinity;
+                    valB = parseFloat(rawB) || -Infinity;
+                } else if (type === 'date') {
+                    valA = rawA || '0';
+                    valB = rawB || '0';
+                } else {
+                    valA = rawA.toLowerCase();
+                    valB = rawB.toLowerCase();
+                }
+
+                if (valA < valB) return asc ? -1 : 1;
+                if (valA > valB) return asc ? 1 : -1;
+                return 0;
+            });
+
+            rows.forEach(row => tbody.appendChild(row));
+        });
+    });
+})();
+</script>
 {% endblock %}

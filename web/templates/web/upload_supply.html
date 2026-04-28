@@ -1,55 +1,52 @@
 {% extends "web/base.html" %}
 
-{% block title %}Загрузка Поставки{% endblock %}
+{% block title %}Загрузка поставки — Jget{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center mt-5">
-    <div class="col-md-6 pb-4">
-        <h2 class="text-center mb-4">📥 Загрузка новой поставки</h2>
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Загрузка поставки</h1>
+        <p class="page-subtitle">Импорт товаров из Excel или CSV файла</p>
+    </div>
+</div>
 
-        <div class="card">
-            <div class="card-header border-0">
-                Загрузите Excel или CSV файл со списком товаров
+<div style="display:flex; justify-content:center;">
+    <div class="form-card" style="width:100%;">
+        <form method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+            {% for field in form %}
+            <div style="margin-bottom: 20px;">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+                {% for error in field.errors %}
+                    <div style="color: var(--accent); font-size: 12.5px; margin-top: 4px;">{{ error }}</div>
+                {% endfor %}
             </div>
-            <div class="card-body p-4 bg-white">
-                <form method="post" enctype="multipart/form-data">
-                    {% csrf_token %}
+            {% endfor %}
 
-                    {% for field in form %}
-                    <div class="mb-4">
-                        <label class="form-label fw-bold" for="{{ field.id_for_label }}">{{ field.label }}</label>
-                        {{ field }}
-                        {% if field.help_text %}
-                        <div class="form-text">{{ field.help_text }}</div>
-                        {% endif %}
-                        {% for error in field.errors %}
-                        <div class="text-danger mt-1 small">{{ error }}</div>
-                        {% endfor %}
-                    </div>
-                    {% endfor %}
+            <button type="submit" class="btn-primary-saas" style="width:100%; justify-content:center; padding: 10px;">
+                Загрузить в базу данных
+            </button>
+        </form>
 
-                    <div class="d-grid mt-4">
-                        <button type="submit" class="btn btn-custom-primary btn-lg fw-bold py-2">Загрузить в базу
-                            данных</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-
-        <div class="alert mt-4" style="background-color: white; border: 1px dashed #55BCC9; border-radius:10px;">
-            <h6 style="color: #55BCC9;" class="fw-bold">Ожидаемый формат колонок:</h6>
-            <div class="table-responsive mt-2">
-                <table class="table table-sm table-bordered text-muted small">
-                    <tr style="background-color:#f8ffff">
+        <div class="format-hint">
+            <h6>Ожидаемый формат колонок</h6>
+            <div style="overflow-x: auto;">
+                <table style="border-collapse:collapse; min-width:100%; white-space:nowrap;">
+                    <tr>
                         <td>Артикул</td>
                         <td>Название товара</td>
                         <td>Закупочная стоимость</td>
                         <td>Стоимость доставки</td>
-                        <td>Себестоимость (пропуск)</td>
+                        <td>Себестоимость</td>
                         <td>Количество</td>
                     </tr>
                 </table>
             </div>
+            <p style="font-size:12px; color:var(--text-muted); margin-top:10px; margin-bottom:0;">
+                Поддерживаются форматы <strong>.xlsx, .xls, .csv</strong> (UTF-8 и CP1251).
+                Разделитель CSV: запятая или точка с запятой.
+            </p>
         </div>
     </div>
 </div>

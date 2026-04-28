@@ -1,45 +1,39 @@
 {% extends "web/base.html" %}
 
-{% block title %}Загрузка Продаж{% endblock %}
+{% block title %}Загрузка продаж — Jget{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center mt-5">
-    <div class="col-md-6 pb-4">
-        <h2 class="text-center mb-4" style="color: #FC4445;">💰 Загрузка отчета о продажах</h2>
-        
-        <div class="card" style="border-color: #55BCC9;">
-            <div class="card-header" style="background-color: #55BCC9; color: white;">
-                Загрузите Excel или CSV файл с продажами
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Загрузка продаж</h1>
+        <p class="page-subtitle">Импорт отчёта о продажах и списание товаров со склада</p>
+    </div>
+</div>
+
+<div style="display:flex; justify-content:center;">
+    <div class="form-card" style="width:100%;">
+        <form method="post" enctype="multipart/form-data">
+            {% csrf_token %}
+            {% for field in form %}
+            <div style="margin-bottom: 20px;">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+                {% for error in field.errors %}
+                    <div style="color: var(--accent); font-size: 12.5px; margin-top: 4px;">{{ error }}</div>
+                {% endfor %}
             </div>
-            <div class="card-body p-4 bg-white">
-                <form method="post" enctype="multipart/form-data">
-                    {% csrf_token %}
-                    
-                    {% for field in form %}
-                    <div class="mb-4">
-                        <label class="form-label fw-bold" for="{{ field.id_for_label }}">{{ field.label }}</label>
-                        {{ field }}
-                        {% if field.help_text %}
-                            <div class="form-text">{{ field.help_text }}</div>
-                        {% endif %}
-                        {% for error in field.errors %}
-                            <div class="text-danger mt-1 small">{{ error }}</div>
-                        {% endfor %}
-                    </div>
-                    {% endfor %}
-                    
-                    <div class="d-grid mt-4">
-                        <button type="submit" class="btn btn-custom-primary btn-lg fw-bold py-2">Списать проданное из инвентаря</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-        
-        <div class="alert mt-4" style="background-color: white; border: 1px dashed #FC4445; border-radius:10px;">
-            <h6 style="color: #FC4445;" class="fw-bold">Ожидаемый формат колонок (Свободная продажа):</h6>
-            <div class="table-responsive mt-2">
-                <table class="table table-sm table-bordered text-muted small">
-                    <tr style="background-color:#fff5f5">
+            {% endfor %}
+
+            <button type="submit" class="btn-primary-saas" style="width:100%; justify-content:center; padding:10px;">
+                Списать проданное и сохранить
+            </button>
+        </form>
+
+        <div class="format-hint">
+            <h6>Ожидаемый формат колонок</h6>
+            <div style="overflow-x: auto;">
+                <table style="border-collapse:collapse; min-width:100%; white-space:nowrap;">
+                    <tr>
                         <td>Артикул</td>
                         <td>Название товара</td>
                         <td>Доход (цена продажи)</td>
@@ -47,7 +41,10 @@
                     </tr>
                 </table>
             </div>
-            <p class="small text-muted mb-0 mt-2">При загрузке автоматически вычитается остаток со склада и рассчитывается прибыль (Доход минус Себестоимость).</p>
+            <p style="font-size:12px; color:var(--text-muted); margin-top:10px; margin-bottom:0;">
+                При загрузке: остаток на складе уменьшается, прибыль рассчитывается автоматически
+                как <strong>Доход − Себестоимость</strong>.
+            </p>
         </div>
     </div>
 </div>
