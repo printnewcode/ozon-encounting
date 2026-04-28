@@ -1,0 +1,103 @@
+.sortable {
+    cursor: pointer;
+    user-select: none;
+    position: relative;
+    padding-right: 22px !important;
+}
+.sortable:hover { color: #aaa; }
+.sortable::after       { content: '↕'; position: absolute; right: 6px; opacity: 0.35; font-size: 11px; }
+.sortable.asc::after   { content: '↑'; opacity: 0.8; }
+.sortable.desc::after  { content: '↓'; opacity: 0.8; }
+
+/* Чередование фона групп (один артикул = одна группа) */
+tr.group-alt { background-color: #F3F6F9; }
+tr.group-alt:hover { background-color: #eaeff5 !important; }
+
+/* Граница сверху при смене артикула */
+tr.group-start td { border-top: 2px solid #D1D9E0 !important; }
+
+/* Подсветка строк по статусу — приоритет выше группы */
+tr.row-in_sale  { background-color: #FFFBEA !important; }
+tr.row-sold-neg { background-color: #FEECEC !important; }
+tr.row-sold-neg:hover { background-color: #fddada !important; }
+tr.row-in_sale:hover  { background-color: #FFF3C4 !important; }
+
+/* ── EXPANDABLE ROWS ──────────────────────── */
+.group-header {
+    cursor: pointer;
+    background-color: var(--bg-card) !important;
+    font-weight: 500;
+}
+.group-header:hover {
+    background-color: var(--bg-page) !important;
+}
+
+.expand-icon {
+    display: inline-block;
+    transition: transform 0.2s ease;
+    font-size: 14px;
+    margin-right: 8px;
+    color: var(--text-muted);
+    width: 12px;
+    text-align: center;
+}
+
+.expanded .expand-icon {
+    transform: rotate(90deg);
+}
+
+.child-row {
+    display: none; /* Hidden by default */
+    background-color: #fcfcfc !important;
+    font-size: 13px;
+}
+
+.child-row.show {
+    display: table-row;
+    animation: row-reveal 0.3s ease-out forwards;
+}
+
+.child-row.hiding {
+    animation: row-hide 0.3s ease-in forwards;
+}
+
+@keyframes row-reveal {
+    0% {
+        opacity: 0;
+        transform: translateY(-8px);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+@keyframes row-hide {
+    0% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+    100% {
+        opacity: 0;
+        transform: translateY(-8px);
+    }
+}
+
+.child-row td {
+    padding-left: 40px !important;
+    border-left: 3px solid transparent; /* Prepare for accent */
+}
+
+.child-row td:first-child {
+    border-left: 3px solid var(--border); /* Subtle visual link */
+}
+
+.count-badge {
+    background: var(--teal-light);
+    color: var(--teal);
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    margin-left: 8px;
+}

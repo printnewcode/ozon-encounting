@@ -1,44 +1,23 @@
 {% extends "web/base.html" %}
+{% load static %}
 
 {% block title %}Учёт товаров — Jget{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'web/css/product_list.css' %}">
+{% endblock %}
 
 {% block content %}
 <div class="page-header">
     <div>
         <h1 class="page-title">Учёт товаров</h1>
-        <p class="page-subtitle">Все позиции: остатки и история продаж</p>
+        <p class="page-subtitle">Все позиции: остатки и история продаж (сгруппировано)</p>
     </div>
     <div style="display:flex; gap:10px;">
         <a href="{% url 'upload_supply' %}" class="btn-secondary-saas">⬇️ Загрузить поставку</a>
         <a href="{% url 'upload_sales' %}" class="btn-primary-saas">📈 Загрузить продажи</a>
     </div>
 </div>
-
-<style>
-    .sortable {
-        cursor: pointer;
-        user-select: none;
-        position: relative;
-        padding-right: 22px !important;
-    }
-    .sortable:hover { color: #aaa; }
-    .sortable::after       { content: '↕'; position: absolute; right: 6px; opacity: 0.35; font-size: 11px; }
-    .sortable.asc::after   { content: '↑'; opacity: 0.8; }
-    .sortable.desc::after  { content: '↓'; opacity: 0.8; }
-
-    /* Чередование фона групп (один артикул = одна группа) */
-    tr.group-alt { background-color: #F3F6F9; }
-    tr.group-alt:hover { background-color: #eaeff5 !important; }
-
-    /* Граница сверху при смене артикула */
-    tr.group-start td { border-top: 2px solid #D1D9E0 !important; }
-
-    /* Подсветка строк по статусу — приоритет выше группы */
-    tr.row-in_sale  { background-color: #FFFBEA !important; }
-    tr.row-sold-neg { background-color: #FEECEC !important; }
-    tr.row-sold-neg:hover { background-color: #fddada !important; }
-    tr.row-in_sale:hover  { background-color: #FFF3C4 !important; }
-</style>
 
 <div class="data-card">
     <table class="table-saas" id="productsTable">
@@ -54,30 +33,50 @@
             </tr>
         </thead>
         <tbody id="productsBody">
-            {% for row in rows %}
-            {% if row.profit is not None and row.profit < 0 %}
-            <tr class="row-sold-neg{% if row.is_group_start %} group-start{% endif %}">
-            {% elif row.status_key == 'in_sale' %}
-            <tr class="row-in_sale{% if row.is_group_start %} group-start{% endif %}">
-            {% elif row.group_idx == 1 %}
-            <tr class="group-alt{% if row.is_group_start %} group-start{% endif %}">
-            {% else %}
-            <tr class="{% if row.is_group_start %}group-start{% endif %}">
-            {% endif %}
-                <td data-sort="{{ row.article }}">
-                    <span class="cell-article">{{ row.article }}</span>
+            {% for group in groups %}
+            <tr class="group-header" data-article="{{ group.article }}">
+                <td data-sort="{{ group.article }}">
+                    <span class="expand-icon">▶</span>
+                    <span class="cell-article">{{ group.article }}</span>
                 </td>
-                <td data-sort="{{ row.name }}">
-                    <span class="cell-name">{{ row.name }}</span>
+                <td data-sort="{{ group.name }}">
+                    <span class="cell-name">{{ group.name }}</span>
+                    <span class="count-badge">{{ group.count }} зап.</span>
                 </td>
-                <td data-sort="{{ row.status_label }}">
+                <td data-sort="{{ group.header_status_label }}">
+                    <span class="badge-status badge-{{ group.header_status_key }}">
+                        {{ group.header_status_label }}
+                    </span>
+                </td>
+                <td data-sort="{{ group.header_cost }}">
+                    {{ group.header_cost }}
+                </td>
+                <td data-sort="-1">
+                    {% if group.has_sales %}<span class="text-muted">...</span>{% endif %}
+                </td>
+                <td data-sort="{{ group.total_profit }}">
+                    {% if group.has_sales %}
+                        {% if group.total_profit < 0 %}
+                            <span class="profit-negative">{{ group.total_profit }}</span>
+                        {% else %}
+                            <span class="profit-positive">{{ group.total_profit }}</span>
+                        {% endif %}
+                    {% endif %}
+                </td>
+                <td data-sort="0"></td>
+            </tr>
+            {% for row in group.rows %}
+            <tr class="child-row child-of-{{ group.article }}">
+                <td></td>{# Article empty for children to emphasize indent #}
+                <td>
+                    <span class="text-secondary" style="font-size: 12px;">{{ row.name }}</span>
+                </td>
+                <td>
                     <span class="badge-status badge-{{ row.status_key }}">
                         {{ row.status_label }}
                     </span>
                 </td>
-                <td data-sort="{{ row.cost_price }}">
-                    {{ row.cost_price }}
-                </td>
+                <td>{{ row.cost_price }}</td>
                 <td data-sort="{% if row.income is not None %}{{ row.income }}{% else %}-1{% endif %}">
                     {% if row.income is not None %}{{ row.income }}{% endif %}
                 </td>
@@ -90,11 +89,11 @@
                         {% endif %}
                     {% endif %}
                 </td>
-                <td data-sort="{% if row.sale_date %}{{ row.sale_date|date:'Y-m-d' }}{% else %}0{% endif %}"
-                    style="font-size:13px; color:var(--text-secondary); white-space:nowrap;">
+                <td style="font-size:13px; color:var(--text-secondary); white-space:nowrap;">
                     {% if row.sale_date %}{{ row.sale_date|date:"d.m.Y" }}{% endif %}
                 </td>
             </tr>
+            {% endfor %}
             {% empty %}
             <tr>
                 <td colspan="7">
@@ -113,55 +112,5 @@
     </table>
 </div>
 
-<script>
-(function () {
-    let lastCol = null, asc = true;
-
-    document.querySelectorAll('.sortable').forEach(function (th) {
-        th.addEventListener('click', function () {
-            const col  = parseInt(th.dataset.col);
-            const type = th.dataset.type;
-
-            if (lastCol === col) { asc = !asc; }
-            else {
-                asc = true;
-                document.querySelectorAll('.sortable').forEach(h => h.classList.remove('asc', 'desc'));
-            }
-            th.classList.toggle('asc', asc);
-            th.classList.toggle('desc', !asc);
-            lastCol = col;
-
-            const tbody = document.getElementById('productsBody');
-            const rows  = Array.from(tbody.querySelectorAll('tr'));
-
-            rows.sort(function (a, b) {
-                const cellA = a.cells[col];
-                const cellB = b.cells[col];
-                if (!cellA || !cellB) return 0;
-
-                const rawA = (cellA.dataset.sort !== undefined ? cellA.dataset.sort : cellA.textContent).trim();
-                const rawB = (cellB.dataset.sort !== undefined ? cellB.dataset.sort : cellB.textContent).trim();
-
-                let valA, valB;
-                if (type === 'num') {
-                    valA = parseFloat(rawA) || -Infinity;
-                    valB = parseFloat(rawB) || -Infinity;
-                } else if (type === 'date') {
-                    valA = rawA || '0';
-                    valB = rawB || '0';
-                } else {
-                    valA = rawA.toLowerCase();
-                    valB = rawB.toLowerCase();
-                }
-
-                if (valA < valB) return asc ? -1 : 1;
-                if (valA > valB) return asc ? 1 : -1;
-                return 0;
-            });
-
-            rows.forEach(row => tbody.appendChild(row));
-        });
-    });
-})();
-</script>
+<script src="{% static 'web/js/product_list.js' %}"></script>
 {% endblock %}

@@ -152,12 +152,23 @@ def upload_sales(request):
     return render(request, 'web/upload_sales.html', {'form': form})
 
 def product_list(request):
-    rows = []
+    groups_dict = {}
 
-    # --- Товары, которые ещё не проданы (в наличии или в продаже) ---
-    unsold = Product.objects.filter(status__in=['in_stock', 'in_sale']).order_by('created_at')
+    # --- 1. Fetch Unsold Products ---
+    unsold = Product.objects.filter(status__in=['in_stock', 'in_sale']).order_by('article', 'created_at')
     for p in unsold:
-        rows.append({
+        art = p.article
+        if art not in groups_dict:
+            groups_dict[art] = {
+                'article': art,
+                'name': p.name,
+                'rows': [],
+                'count': 0,
+                'total_profit': Decimal('0'),
+                'has_sales': False
+            }
+        
+        groups_dict[art]['rows'].append({
             'article':      p.article,
             'name':         p.name,
             'status_key':   p.status,
@@ -167,11 +178,23 @@ def product_list(request):
             'profit':       None,
             'sale_date':    None,
         })
+        groups_dict[art]['count'] += 1
 
-    # --- Записи о продажах (каждая продажа — отдельная строка) ---
-    sales = SaleRecord.objects.select_related('product').order_by('sale_date', 'created_at')
+    # --- 2. Fetch Sale Records ---
+    sales = SaleRecord.objects.select_related('product').order_by('article', 'sale_date', 'created_at')
     for s in sales:
-        rows.append({
+        art = s.article
+        if art not in groups_dict:
+            groups_dict[art] = {
+                'article': art,
+                'name': s.name,
+                'rows': [],
+                'count': 0,
+                'total_profit': Decimal('0'),
+                'has_sales': False
+            }
+        
+        groups_dict[art]['rows'].append({
             'article':      s.article,
             'name':         s.name,
             'status_key':   'sold',
@@ -181,18 +204,32 @@ def product_list(request):
             'profit':       s.profit,
             'sale_date':    s.sale_date,
         })
+        groups_dict[art]['count'] += 1
+        if s.profit:
+            groups_dict[art]['total_profit'] += s.profit
+        groups_dict[art]['has_sales'] = True
 
-    # --- Добавляем метки групп для визуального разделения ---
-    current_article = None
-    group_idx = 0
-    for row in rows:
-        if row['article'] != current_article:
-            current_article = row['article']
-            group_idx = 1 - group_idx   # переключаем 0 <-> 1
-            row['is_group_start'] = True
+    # --- 3. Finalize Groups ---
+    # Sort articles alphabetically (or any other default)
+    sorted_articles = sorted(groups_dict.keys())
+    groups = []
+    for art in sorted_articles:
+        group = groups_dict[art]
+        
+        # Decide what to show on the header
+        # If there are multiple statuses, show "Смешанный" or similar
+        statuses = set(r['status_key'] for r in group['rows'])
+        if len(statuses) == 1:
+            group['header_status_key'] = list(statuses)[0]
+            group['header_status_label'] = group['rows'][0]['status_label']
         else:
-            row['is_group_start'] = False
-        row['group_idx'] = group_idx
+            group['header_status_key'] = 'mixed'
+            group['header_status_label'] = 'Разные статусы'
+        
+        # Summary prices for header (showing first one or a range)
+        group['header_cost'] = group['rows'][0]['cost_price']
+        
+        groups.append(group)
 
-    return render(request, 'web/product_list.html', {'rows': rows})
+    return render(request, 'web/product_list.html', {'groups': groups})
 
