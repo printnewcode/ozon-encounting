@@ -1,7 +1,7 @@
 {% extends "web/base.html" %}
 {% load static %}
 
-{% block title %}Учёт товаров — Jget{% endblock %}
+{% block title %}Учет товаров - Jget{% endblock %}
 
 {% block extra_css %}
 <link rel="stylesheet" href="{% static 'web/css/product_list.css' %}">
@@ -10,7 +10,7 @@
 {% block content %}
 <div class="page-header">
     <div>
-        <h1 class="page-title">Учёт товаров</h1>
+        <h1 class="page-title">Учет товаров</h1>
         <p class="page-subtitle">Остатки и история продаж</p>
     </div>
     <div class="page-actions">
@@ -42,8 +42,10 @@
                     <span class="cell-article text-clip">{{ group.article }}</span>
                 </td>
                 <td data-sort="{{ group.name }}" title="{{ group.name }}">
-                    <span class="cell-name text-clip">{{ group.name }}</span>
-                    <span class="count-badge">{{ group.count }} зап.</span>
+                    <div class="group-name-layout">
+                        <span class="cell-name text-clip">{{ group.name }}</span>
+                        <span class="count-badge">{{ group.count }} зап.</span>
+                    </div>
                 </td>
                 <td data-sort="{{ group.header_status_label }}">
                     <span class="badge-status badge-{{ group.header_status_key }}">

@@ -24,13 +24,15 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-4@^xl1-))3m+t18!iw7x0lb4#qk#nq$_nut=p!=g1h3p5ab6+f'
+SECRET_KEY = os.getenv(
+    'SECRET_KEY',
+    'django-insecure-4@^xl1-))3m+t18!iw7x0lb4#qk#nq$_nut=p!=g1h3p5ab6+f',
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = bool(os.getenv('DEBUG', True))
-LOCAL = bool(os.getenv('LOCAL', True))
-
-ALLOWED_HOSTS = []
+DEBUG = True if os.getenv('DEBUG').lower() == "true" else False
+LOCAL = True if os.getenv('LOCAL').lower() == "true" else False
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS').split(',') if os.getenv('ALLOWED_HOSTS') else '*'
 
 
 # Application definition
@@ -79,7 +81,7 @@ WSGI_APPLICATION = 'Encounting.wsgi.application'
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
 
 if LOCAL:
-        DATABASES = {
+    DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
             'NAME': BASE_DIR / 'db.sqlite3',
@@ -137,4 +139,5 @@ if LOCAL:
     STATIC_URL = 'static/'
 # Когда на хостинге - грузит в public_html
 else:
-    STATIC_URL = BASE_DIR / ".." / ".." / "public_html" / "static"
+    STATIC_URL = '/static/'
+    STATIC_ROOT = BASE_DIR / '..' / '..' / 'public_html' / 'static'

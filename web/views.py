@@ -1,27 +1,34 @@
 import io
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from urllib.parse import quote
 
 import pandas as pd
-from django.db.models import F
-from django.http import HttpResponse
-from django.shortcuts import render, redirect
 from django.contrib import messages
+from django.db import transaction
+from django.http import HttpResponse
+from django.shortcuts import redirect, render
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
+from .forms import SalesUploadForm, SupplyUploadForm
 from .models import Product, SaleRecord
-from .forms import SupplyUploadForm, SalesUploadForm
 
 
-def export_filename(name):
+MONEY_HEADERS = ('Стоимость в закупке', 'Доставка', 'Себестоимость', 'Доход', 'Прибыль')
+DATE_HEADER = 'Дата продажи'
+CSV_ENCODINGS = ('utf-8-sig', 'utf-8', 'cp1251')
+MAX_VISIBLE_WARNINGS = 5
+
+
+def export_filename(name: str) -> str:
     timestamp = datetime.now().strftime('%Y-%m-%d')
     return f'{name}_{timestamp}.xlsx'
 
 
-def workbook_response(workbook, filename):
+def workbook_response(workbook: Workbook, filename: str) -> HttpResponse:
     buffer = io.BytesIO()
     workbook.save(buffer)
     buffer.seek(0)
@@ -34,7 +41,7 @@ def workbook_response(workbook, filename):
     return response
 
 
-def style_export_sheet(sheet, widths):
+def style_export_sheet(sheet, widths: list[int]) -> None:
     header_fill = PatternFill('solid', fgColor='0EA5E9')
     header_font = Font(color='FFFFFF', bold=True)
     border_color = 'E5E7EB'
@@ -68,38 +75,80 @@ def style_export_sheet(sheet, widths):
     for column in sheet.iter_cols():
         header = column[0].value
         for cell in column[1:]:
-            if header in ('Стоимость в закупке', 'Доставка', 'Себестоимость', 'Доход', 'Прибыль'):
+            if header in MONEY_HEADERS:
                 cell.number_format = '#,##0.00'
-            elif header == 'Дата продажи':
+            elif header == DATE_HEADER:
                 cell.number_format = 'DD.MM.YYYY'
 
-def parse_file(file):
-    """ Вспомогательная функция для парсинга Excel/CSV файлов через pandas. """
-    if file.name.endswith('.csv'):
-        # Читаем содержимое файла в память
+
+def parse_decimal(value, field_name: str, row_number: int) -> Decimal:
+    try:
+        return Decimal(str(value).strip().replace(',', '.'))
+    except (InvalidOperation, ValueError):
+        raise ValueError(f"Строка {row_number}: некорректное значение поля «{field_name}»: {value!r}")
+
+
+def parse_positive_int(value, field_name: str, row_number: int, default: int | None = None) -> int:
+    if value in (None, '') and default is not None:
+        return default
+    try:
+        quantity = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"Строка {row_number}: некорректное значение поля «{field_name}»: {value!r}")
+    if quantity <= 0:
+        raise ValueError(f"Строка {row_number}: поле «{field_name}» должно быть больше 0")
+    return quantity
+
+
+def is_header_or_empty_article(value) -> bool:
+    article = str(value).strip()
+    return not article or article.lower() in {'nan', 'article', 'артикул'}
+
+
+def values_differ(left, right) -> bool:
+    return str(left).strip() != str(right).strip()
+
+
+def add_limited_warning(warnings: list[str], message: str) -> None:
+    if message not in warnings:
+        warnings.append(message)
+
+
+def show_import_warnings(request, warnings: list[str]) -> None:
+    if not warnings:
+        return
+    visible_warnings = warnings[:MAX_VISIBLE_WARNINGS]
+    suffix = f" Еще предупреждений: {len(warnings) - MAX_VISIBLE_WARNINGS}." if len(warnings) > MAX_VISIBLE_WARNINGS else ''
+    messages.warning(request, " ".join(visible_warnings) + suffix)
+
+
+def sale_cost_price(sale: SaleRecord) -> Decimal:
+    if sale.profit is not None:
+        return sale.income - sale.profit
+    return sale.product.cost_price
+
+
+def parse_file(file) -> pd.DataFrame:
+    """Parse uploaded Excel/CSV file into a normalized DataFrame."""
+    if Path(file.name).suffix.lower() == '.csv':
         content = file.read()
-        
-        # Пробуем разные кодировки
-        for encoding in ['utf-8', 'cp1251']:
+
+        for encoding in CSV_ENCODINGS:
             try:
-                # Превращаем байты в текст и оборачиваем в StringIO для pandas
                 decoded_content = content.decode(encoding)
                 separator = ';' if ';' in decoded_content else ','
-                
                 df = pd.read_csv(io.StringIO(decoded_content), sep=separator)
-                break # Если прочитали успешно — выходим из цикла
+                break
             except UnicodeDecodeError:
                 continue
         else:
             raise ValueError("Не удалось определить кодировку файла. Используйте UTF-8 или CP1251.")
     else:
         df = pd.read_excel(file)
-    
-    # Очищаем колонки от лишних пробелов для надежности
-    df.columns = df.columns.str.strip()
-    # Заменяем все пустые ячейки (NaN) на 0 или пустую строку
-    df = df.fillna(0) 
-    return df
+
+    df.columns = df.columns.astype(str).str.strip()
+    return df.fillna('')
+
 
 def upload_supply(request):
     if request.method == 'POST':
@@ -108,50 +157,74 @@ def upload_supply(request):
             file = form.cleaned_data['file']
             try:
                 df = parse_file(file)
-                
-                products_created = 0
-                for index, row in df.iterrows():
-                    # Извлегчение столбцов
-                    # Артикул
-                    article = str(row.iloc[0]).strip()
-                    if article.lower() == "артикул" or article.lower() == "article" or not article or article == "nan":
-                        continue
-                    # Название
-                    name = str(row.iloc[1]).strip()
-                    # Стоимость закупки
-                    purchase_price = row.iloc[2]
-                    # Стоимость доставки
-                    delivery_cost = row.iloc[3]
-                    # Количество
-                    quantity = int(row.iloc[5]) if df.shape[1] > 5 else int(row.get('Количество', 0))
 
-                    # Создаем товар или обновляем, если он уже был
-                    product, created = Product.objects.update_or_create(
-                        article=article,
-                        defaults={
-                            'purchase_price': purchase_price,
-                            'delivery_cost': delivery_cost,
-                            'quantity': F('quantity') + quantity,
-                            'status': 'in_stock', 
-                        },
-                        create_defaults={
-                            'name': name,
-                            'purchase_price': purchase_price,
-                            'delivery_cost': delivery_cost,
-                            'quantity': quantity,
-                            'status': 'in_stock'
-                        }
-                    )
-                    products_created += 1
+                products_created = 0
+                warnings = []
+                seen_articles = set()
+                with transaction.atomic():
+                    for index, row in df.iterrows():
+                        row_number = index + 1
+                        if df.shape[1] < 5:
+                            raise ValueError("Файл поставки должен содержать минимум 5 колонок.")
+
+                        article = str(row.iloc[0]).strip()
+                        if is_header_or_empty_article(article):
+                            continue
+                        if article in seen_articles:
+                            add_limited_warning(
+                                warnings,
+                                f"Артикул {article} встречается в файле поставки несколько раз; количество будет суммировано.",
+                            )
+                        seen_articles.add(article)
+
+                        name = str(row.iloc[1]).strip()
+                        if not name:
+                            raise ValueError(f"Строка {row_number}: название товара не может быть пустым")
+
+                        purchase_price = parse_decimal(row.iloc[2], 'Стоимость в закупке', row_number)
+                        delivery_cost = parse_decimal(row.iloc[3], 'Доставка', row_number)
+                        quantity_value = row.iloc[5] if df.shape[1] > 5 else row.iloc[4]
+                        quantity = parse_positive_int(quantity_value, 'Количество', row_number)
+
+                        product, created = Product.objects.select_for_update().get_or_create(
+                            article=article,
+                            defaults={
+                                'name': name,
+                                'purchase_price': purchase_price,
+                                'delivery_cost': delivery_cost,
+                                'quantity': quantity,
+                                'status': 'in_stock',
+                            },
+                        )
+                        if not created:
+                            if values_differ(product.name, name):
+                                add_limited_warning(
+                                    warnings,
+                                    f"Для артикула {article} название в файле отличается от базы: «{name}» / «{product.name}».",
+                                )
+                            if product.purchase_price != purchase_price or product.delivery_cost != delivery_cost:
+                                add_limited_warning(
+                                    warnings,
+                                    f"Для артикула {article} изменена цена поставки или доставки; себестоимость пересчитана.",
+                                )
+                            product.purchase_price = purchase_price
+                            product.delivery_cost = delivery_cost
+                            product.quantity += quantity
+                            product.status = 'in_stock'
+                            product.save()
+
+                        products_created += 1
 
                 messages.success(request, f'Успешно загружено {products_created} товаров из поставки.')
+                show_import_warnings(request, warnings)
                 return redirect('product_list')
-            except Exception as e:
-                messages.error(request, f'Ошибка при обработке файла: {e}')
+            except Exception as exc:
+                messages.error(request, f'Ошибка при обработке файла: {exc}')
     else:
         form = SupplyUploadForm()
 
     return render(request, 'web/upload_supply.html', {'form': form})
+
 
 def upload_sales(request):
     if request.method == 'POST':
@@ -161,60 +234,81 @@ def upload_sales(request):
             sale_type = form.cleaned_data['sale_type']
             try:
                 df = parse_file(file)
-                # Формат: Article | Name | Income | Quantity
-                
+
                 sales_created = 0
                 errors = []
-                for index, row in df.iterrows():
-                    article = str(row.iloc[0]).strip()
-                    name = str(row.iloc[1]).strip()
-                    # Явное приведение к Decimal, чтобы не было конфликта типов str vs Decimal
-                    try:
-                        income = Decimal(str(row.iloc[2]).strip().replace(',', '.'))
-                    except InvalidOperation:
-                        errors.append(f"Строка {index+1}: некорректное значение дохода '{row.iloc[2]}'")
-                        continue
-                    # Извлекаем количество (df.shape[1] = число колонок DataFrame, не Series)
-                    quantity_sold = int(row.iloc[3]) if df.shape[1] > 3 else 1
+                warnings = []
+                seen_articles = set()
+                with transaction.atomic():
+                    for index, row in df.iterrows():
+                        row_number = index + 1
+                        if df.shape[1] < 3:
+                            raise ValueError("Файл продаж должен содержать минимум 3 колонки.")
 
-                    try:
-                        product = Product.objects.get(article=article)
-                        
-                        # Обновляем статус и количество товара
+                        article = str(row.iloc[0]).strip()
+                        if is_header_or_empty_article(article):
+                            continue
+                        if article in seen_articles:
+                            add_limited_warning(
+                                warnings,
+                                f"Артикул {article} встречается в файле продаж несколько раз; продажи будут суммированы.",
+                            )
+                        seen_articles.add(article)
+
+                        uploaded_name = str(row.iloc[1]).strip() if df.shape[1] > 1 else ''
+
+                        income = parse_decimal(row.iloc[2], 'Доход', row_number)
+                        quantity_value = row.iloc[3] if df.shape[1] > 3 else None
+                        quantity_sold = parse_positive_int(quantity_value, 'Количество', row_number, default=1)
+
+                        try:
+                            product = Product.objects.select_for_update().get(article=article)
+                        except Product.DoesNotExist:
+                            errors.append(f"Товар с артикулом {article} не найден в базе.")
+                            continue
+
+                        if uploaded_name and values_differ(product.name, uploaded_name):
+                            add_limited_warning(
+                                warnings,
+                                f"Для артикула {article} название в файле отличается от базы: «{uploaded_name}» / «{product.name}».",
+                            )
+                        if quantity_sold > product.quantity:
+                            add_limited_warning(
+                                warnings,
+                                f"По артикулу {article} продано {quantity_sold}, а в остатке было {product.quantity}; остаток обнулен.",
+                            )
+
                         product.quantity -= quantity_sold
                         if product.quantity <= 0:
                             product.status = 'sold'
                             product.quantity = 0
-                        else:
+                        elif sale_type == 'ozon':
                             product.status = 'in_sale'
                         product.save()
 
-                        # Создаем запись о продаже
-                        # Прибыль рассчитается автоматически в методе save()
                         for _ in range(quantity_sold):
                             SaleRecord.objects.create(
                                 product=product,
                                 sale_type=sale_type,
                                 income=income,
-                                # Название и артикул скопируются автоматически
                             )
                         sales_created += quantity_sold
 
-                    except Product.DoesNotExist:
-                        errors.append(f"Товар с артикулом {article} не найден в базе.")
-                
                 if sales_created > 0:
                     messages.success(request, f'Успешно загружено {sales_created} записей о продажах.')
                 if errors:
-                    messages.warning(request, "Некоторые товары не были найдены: " + ", ".join(errors[:5]) + ("..." if len(errors)>5 else ""))
-                
+                    message = "Некоторые товары не были найдены: " + ", ".join(errors[:5])
+                    messages.warning(request, message + ("..." if len(errors) > 5 else ""))
+                show_import_warnings(request, warnings)
+
                 return redirect('product_list')
-            except Exception as e:
-                messages.error(request, f'Ошибка при обработке файла: {e}')
+            except Exception as exc:
+                messages.error(request, f'Ошибка при обработке файла: {exc}')
     else:
         form = SalesUploadForm()
 
     return render(request, 'web/upload_sales.html', {'form': form})
+
 
 def product_list(request):
     groups_dict = {}
@@ -241,48 +335,45 @@ def product_list(request):
             }
         return groups_dict[group_key]
 
-    # --- 1. Fetch Unsold Products ---
     unsold = Product.objects.filter(status__in=['in_stock', 'in_sale']).order_by('article', 'created_at')
-    for p in unsold:
-        group = get_group(p.article, p.status, p.name, p.get_status_display())
-        remaining_count = max(p.quantity, 1)
+    for product in unsold:
+        group = get_group(product.article, product.status, product.name, product.get_status_display())
+        remaining_count = max(product.quantity, 1)
 
         for _ in range(remaining_count):
             group['rows'].append({
-                'article':      p.article,
-                'name':         p.name,
-                'status_key':   p.status,
-                'status_label': p.get_status_display(),
-                'cost_price':   p.cost_price,
-                'income':       None,
-                'profit':       None,
-                'sale_date':    None,
+                'article': product.article,
+                'name': product.name,
+                'status_key': product.status,
+                'status_label': product.get_status_display(),
+                'cost_price': product.cost_price,
+                'income': None,
+                'profit': None,
+                'sale_date': None,
             })
             group['count'] += 1
 
-    # --- 2. Fetch Sale Records ---
     sales = SaleRecord.objects.select_related('product').order_by('article', 'sale_date', 'created_at')
-    for s in sales:
-        group = get_group(s.article, 'sold', s.name, 'Продан')
+    for sale in sales:
+        group = get_group(sale.article, 'sold', sale.name, 'Продан')
 
         group['rows'].append({
-            'article':      s.article,
-            'name':         s.name,
-            'status_key':   'sold',
+            'article': sale.article,
+            'name': sale.name,
+            'status_key': 'sold',
             'status_label': 'Продан',
-            'cost_price':   s.product.cost_price,
-            'income':       s.income,
-            'profit':       s.profit,
-            'sale_date':    s.sale_date,
+            'cost_price': sale_cost_price(sale),
+            'income': sale.income,
+            'profit': sale.profit,
+            'sale_date': sale.sale_date,
         })
         group['count'] += 1
-        if s.income:
-            group['total_income'] += s.income
-        if s.profit:
-            group['total_profit'] += s.profit
+        if sale.income:
+            group['total_income'] += sale.income
+        if sale.profit:
+            group['total_profit'] += sale.profit
         group['has_sales'] = True
 
-    # --- 3. Finalize Groups ---
     groups = []
     for group in sorted(groups_dict.values(), key=lambda item: (item['sort_status'], item['article'], item['name'])):
         group['header_status_key'] = group['status_key']
@@ -305,7 +396,7 @@ def export_sales_report(request):
             sale.article,
             sale.name,
             'Продан',
-            sale.product.cost_price,
+            sale_cost_price(sale),
             sale.income,
             sale.profit,
             sale.sale_date,
@@ -345,4 +436,3 @@ def export_stock_balance(request):
 
     style_export_sheet(sheet, [20, 36, 20, 14, 16, 14, 14])
     return workbook_response(workbook, export_filename('Учет_остатков'))
-
