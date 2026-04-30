@@ -39,3 +39,26 @@ class SalesUploadForm(forms.Form):
         validators=[validate_file_extension],
         widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.xlsx,.xls,.csv'}),
     )
+
+
+class SalesReportPeriodForm(forms.Form):
+    date_from = forms.DateField(
+        label='Дата с',
+        required=False,
+        widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+    )
+    date_to = forms.DateField(
+        label='Дата по',
+        required=False,
+        widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+    )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        date_from = cleaned_data.get('date_from')
+        date_to = cleaned_data.get('date_to')
+
+        if date_from and date_to and date_from > date_to:
+            raise ValidationError('Дата начала периода не может быть позже даты окончания.')
+
+        return cleaned_data

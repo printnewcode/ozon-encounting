@@ -14,12 +14,18 @@
         <p class="page-subtitle">Остатки и история продаж</p>
     </div>
     <div class="page-actions">
+        <form method="post" action="{% url 'sync_ozon' %}" style="margin:0;">
+            {% csrf_token %}
+            <button type="submit" class="btn-secondary-saas">Синхронизировать с Ozon</button>
+        </form>
         <a href="{% url 'export_stock_balance' %}" class="btn-secondary-saas">📦 Учет остатков</a>
-        <a href="{% url 'export_sales_report' %}" class="btn-secondary-saas">📄 Отчет продаж</a>
+        <a href="{% url 'sales_report_period' %}" class="btn-secondary-saas">📄 Отчет продаж</a>
         <a href="{% url 'upload_supply' %}" class="btn-secondary-saas">⬇️ Загрузить поставку</a>
         <a href="{% url 'upload_sales' %}" class="btn-primary-saas">📈 Загрузить продажи</a>
     </div>
 </div>
+
+{% include "web/includes/pagination.html" %}
 
 <div class="data-card">
     <table class="table-saas" id="productsTable">
@@ -132,6 +138,8 @@
         </tbody>
     </table>
 </div>
+
+{% include "web/includes/pagination.html" %}
 
 <script src="{% static 'web/js/product_list.js' %}"></script>
 {% endblock %}

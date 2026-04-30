@@ -1,0 +1,35 @@
+{% extends "web/base.html" %}
+
+{% block title %}Отчет продаж - Jget{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Отчет продаж</h1>
+        <p class="page-subtitle">Выберите отчетный период для выгрузки</p>
+    </div>
+</div>
+
+<div style="display:flex; justify-content:center;">
+    <div class="form-card" style="width:100%;">
+        <form method="get" action="{% url 'export_sales_report' %}">
+            {% for field in form %}
+            <div style="margin-bottom: 20px;">
+                <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+                {{ field }}
+                {% for error in field.errors %}
+                    <div style="color: var(--accent); font-size: 12.5px; margin-top: 4px;">{{ error }}</div>
+                {% endfor %}
+            </div>
+            {% endfor %}
+            {% for error in form.non_field_errors %}
+                <div style="color: var(--accent); font-size: 12.5px; margin-bottom: 12px;">{{ error }}</div>
+            {% endfor %}
+
+            <button type="submit" class="btn-primary-saas" style="width:100%; justify-content:center; padding:10px;">
+                Скачать отчет
+            </button>
+        </form>
+    </div>
+</div>
+{% endblock %}

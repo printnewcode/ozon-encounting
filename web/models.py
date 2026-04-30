@@ -1,4 +1,5 @@
 from django.db import models
+from django.utils import timezone
 
 
 class Product(models.Model):
@@ -15,6 +16,10 @@ class Product(models.Model):
     delivery_cost = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='Стоимость доставки')
     cost_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='Себестоимость')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='in_stock', verbose_name='Статус')
+    ozon_product_id = models.BigIntegerField(blank=True, null=True, db_index=True, verbose_name='Ozon product ID')
+    ozon_sku = models.BigIntegerField(blank=True, null=True, db_index=True, verbose_name='Ozon SKU')
+    ozon_visibility = models.CharField(max_length=50, blank=True, verbose_name='Ozon visibility')
+    ozon_status = models.CharField(max_length=100, blank=True, verbose_name='Ozon status')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Дата создания записи')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='Дата обновления записи')
 
@@ -48,7 +53,9 @@ class SaleRecord(models.Model):
     sale_type = models.CharField(max_length=20, choices=SALE_TYPE_CHOICES, verbose_name='Тип продажи')
     income = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='Доход (цена продажи)')
     profit = models.DecimalField(max_digits=10, decimal_places=2, blank=True, null=True, verbose_name='Прибыль')
-    sale_date = models.DateField(auto_now_add=True, verbose_name='Дата продажи')
+    sale_date = models.DateField(default=timezone.localdate, verbose_name='Дата продажи')
+    external_id = models.CharField(max_length=255, blank=True, null=True, unique=True, verbose_name='Внешний ID')
+    posting_number = models.CharField(max_length=100, blank=True, null=True, db_index=True, verbose_name='Ozon posting number')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Дата создания записи')
 
     def save(self, *args, **kwargs) -> None:

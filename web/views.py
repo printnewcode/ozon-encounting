@@ -1,26 +1,32 @@
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from urllib.parse import quote
 
 import pandas as pd
 from django.contrib import messages
+from django.core.paginator import Paginator
 from django.db import transaction
 from django.http import HttpResponse
 from django.shortcuts import redirect, render
+from django.views.decorators.http import require_POST
+from django.utils import timezone
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
-from .forms import SalesUploadForm, SupplyUploadForm
+from .forms import SalesReportPeriodForm, SalesUploadForm, SupplyUploadForm
 from .models import Product, SaleRecord
+from .services.ozon_client import OzonAPIError
+from .services.ozon_sync import OzonSyncService
 
 
 MONEY_HEADERS = ('Стоимость в закупке', 'Доставка', 'Себестоимость', 'Доход', 'Прибыль')
 DATE_HEADER = 'Дата продажи'
 CSV_ENCODINGS = ('utf-8-sig', 'utf-8', 'cp1251')
 MAX_VISIBLE_WARNINGS = 5
+PRODUCT_GROUPS_PER_PAGE = 25
 
 
 def export_filename(name: str) -> str:
@@ -381,16 +387,70 @@ def product_list(request):
         group['header_cost'] = group['rows'][0]['cost_price']
         groups.append(group)
 
-    return render(request, 'web/product_list.html', {'groups': groups})
+    paginator = Paginator(groups, PRODUCT_GROUPS_PER_PAGE)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    return render(request, 'web/product_list.html', {
+        'groups': page_obj.object_list,
+        'page_obj': page_obj,
+        'paginator': paginator,
+        'total_groups': paginator.count,
+    })
+
+
+@require_POST
+def sync_ozon(request):
+    date_to = timezone.localdate()
+    date_from = date_to - timedelta(days=30)
+
+    try:
+        result = OzonSyncService().sync_all(date_from, date_to)
+        messages.success(
+            request,
+            (
+                'Синхронизация с Ozon завершена: '
+                f'создано товаров: {result.products_created}, '
+                f'обновлено товаров: {result.products_updated}, '
+                f'обновлено остатков: {result.stocks_updated}, '
+                f'создано продаж: {result.sales_created}, '
+                f'пропущено дублей: {result.sales_skipped}.'
+            ),
+        )
+    except OzonAPIError as exc:
+        messages.error(request, f'Ошибка Ozon API: {exc}')
+
+    return redirect('product_list')
+
+
+def sales_report_period(request):
+    initial = {'date_to': timezone.localdate()}
+    form = SalesReportPeriodForm(request.GET or None, initial=initial)
+    return render(request, 'web/sales_report_period.html', {'form': form})
 
 
 def export_sales_report(request):
+    form = SalesReportPeriodForm(request.GET)
+    if not form.is_valid():
+        messages.error(request, 'Проверьте даты отчетного периода.')
+        return redirect('sales_report_period')
+
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = 'Отчет продаж'
     sheet.append(['Артикул', 'Название', 'Состояние', 'Себестоимость', 'Доход', 'Прибыль', 'Дата продажи'])
 
     sales = SaleRecord.objects.select_related('product').order_by('sale_date', 'created_at', 'article')
+    date_from = form.cleaned_data.get('date_from')
+    date_to = form.cleaned_data.get('date_to')
+    if date_from:
+        sales = sales.filter(sale_date__gte=date_from)
+    if date_to:
+        sales = sales.filter(sale_date__lte=date_to)
+
+    if not sales.exists():
+        messages.warning(request, 'За выбранный период продаж нет. Отчет не сформирован.')
+        return redirect('sales_report_period')
+
     for sale in sales:
         sheet.append([
             sale.article,

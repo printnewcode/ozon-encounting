@@ -1,0 +1,36 @@
+{% if paginator.num_pages > 1 %}
+<div class="pagination-bar">
+    <div class="pagination-summary">
+        Страница {{ page_obj.number }} из {{ paginator.num_pages }} · всего {{ total_groups }} записей
+    </div>
+    <div class="pagination-actions">
+        {% if page_obj.has_previous %}
+            <a class="pagination-link" href="?page=1">Первая</a>
+            <a class="pagination-link" href="?page={{ page_obj.previous_page_number }}">Назад</a>
+        {% else %}
+            <span class="pagination-link disabled">Первая</span>
+            <span class="pagination-link disabled">Назад</span>
+        {% endif %}
+
+        {% for page_number in paginator.page_range %}
+            {% if page_number == page_obj.number %}
+                <span class="pagination-link active">{{ page_number }}</span>
+            {% elif page_number >= page_obj.number|add:'-2' and page_number <= page_obj.number|add:'2' %}
+                <a class="pagination-link" href="?page={{ page_number }}">{{ page_number }}</a>
+            {% endif %}
+        {% endfor %}
+
+        {% if page_obj.has_next %}
+            <a class="pagination-link" href="?page={{ page_obj.next_page_number }}">Вперед</a>
+            <a class="pagination-link" href="?page={{ paginator.num_pages }}">Последняя</a>
+        {% else %}
+            <span class="pagination-link disabled">Вперед</span>
+            <span class="pagination-link disabled">Последняя</span>
+        {% endif %}
+    </div>
+</div>
+{% elif total_groups %}
+<div class="pagination-bar">
+    <div class="pagination-summary">Всего {{ total_groups }} записей</div>
+</div>
+{% endif %}

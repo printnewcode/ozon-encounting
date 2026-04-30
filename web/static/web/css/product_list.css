@@ -107,6 +107,58 @@
     gap: 10px;
 }
 
+.pagination-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    margin: 14px 0;
+}
+
+.pagination-summary {
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+}
+
+.pagination-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+}
+
+.pagination-link {
+    min-width: 34px;
+    min-height: 32px;
+    padding: 6px 10px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 600;
+    text-align: center;
+    text-decoration: none;
+}
+
+.pagination-link:hover {
+    background: var(--bg-page);
+    color: var(--text-primary);
+}
+
+.pagination-link.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+}
+
+.pagination-link.disabled {
+    opacity: .45;
+    cursor: default;
+}
+
 /* ── EXPANDABLE ROWS ──────────────────────── */
 .group-header {
     cursor: pointer;
@@ -302,5 +354,14 @@
 @media (max-width: 768px) {
     #productsTable {
         min-width: 980px;
+    }
+
+    .pagination-bar {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .pagination-actions {
+        justify-content: flex-start;
     }
 }

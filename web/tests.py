@@ -1,14 +1,56 @@
+from datetime import date
 from decimal import Decimal
 from io import BytesIO
 
-from django.core.files.uploadedfile import SimpleUploadedFile
 from django.contrib.messages import get_messages
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
+from django.utils import timezone
 from django.urls import reverse
 from openpyxl import load_workbook
 
 from .models import Product, SaleRecord
+from .services.ozon_sync import OzonSyncService
 from .views import parse_file
+
+
+class FakeOzonClient:
+    def product_list(self):
+        return iter([
+            {'offer_id': 'OZON-1', 'product_id': 101, 'visibility': 'VISIBLE'},
+        ])
+
+    def product_info_list(self, offer_ids):
+        return [
+            {'offer_id': 'OZON-1', 'id': 101, 'sku': 202, 'name': 'Товар Ozon', 'statuses': {'status': 'ready'}},
+        ]
+
+    def product_stocks(self):
+        return iter([
+            {'offer_id': 'OZON-1', 'visibility': 'VISIBLE', 'stocks': [{'present': 3}, {'present': 2}]},
+        ])
+
+    def fbo_postings(self, date_from, date_to):
+        return iter([
+            {
+                'posting_number': 'FBO-1',
+                'in_process_at': '2026-04-20T10:00:00Z',
+                'products': [
+                    {'offer_id': 'OZON-1', 'name': 'Товар Ozon', 'price': '150.50', 'quantity': 2},
+                ],
+            },
+        ])
+
+    def fbs_postings(self, date_from, date_to):
+        return iter([
+            {
+                'posting_number': 'FBS-1',
+                'shipment_date': '2026-04-21T10:00:00Z',
+                'products': [
+                    {'offer_id': 'OZON-1', 'name': 'Товар Ozon', 'price': '200.00', 'quantity': 1},
+                ],
+            },
+        ])
 
 
 class ProductModelTests(TestCase):
@@ -22,6 +64,101 @@ class ProductModelTests(TestCase):
         )
 
         self.assertEqual(product.cost_price, Decimal('120.75'))
+
+
+class OzonSyncTests(TestCase):
+    def setUp(self):
+        self.service = OzonSyncService(client=FakeOzonClient())
+
+    def test_sync_products_creates_product_from_ozon(self):
+        result = self.service.sync_products()
+
+        product = Product.objects.get(article='OZON-1')
+        self.assertEqual(result.products_created, 1)
+        self.assertEqual(product.name, 'Товар Ozon')
+        self.assertEqual(product.ozon_product_id, 101)
+        self.assertEqual(product.ozon_sku, 202)
+        self.assertEqual(product.ozon_visibility, 'VISIBLE')
+        self.assertEqual(product.ozon_status, 'ready')
+        self.assertEqual(product.purchase_price, Decimal('0.00'))
+
+    def test_sync_stocks_updates_quantity_and_status(self):
+        Product.objects.create(
+            article='OZON-1',
+            name='Товар Ozon',
+            quantity=0,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+        )
+
+        result = self.service.sync_stocks()
+
+        product = Product.objects.get(article='OZON-1')
+        self.assertEqual(result.stocks_updated, 1)
+        self.assertEqual(product.quantity, 5)
+        self.assertEqual(product.status, 'in_sale')
+
+    def test_sync_stocks_keeps_blocked_product_out_of_sale(self):
+        product = Product.objects.create(
+            article='OZON-1',
+            name='Товар Ozon',
+            quantity=0,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            ozon_visibility='INVISIBLE',
+            ozon_status='validation_failed',
+        )
+
+        result = self.service.sync_stocks()
+
+        product.refresh_from_db()
+        self.assertEqual(result.stocks_updated, 1)
+        self.assertEqual(product.quantity, 5)
+        self.assertEqual(product.status, 'in_stock')
+
+    def test_sync_postings_creates_sales_without_duplicates(self):
+        product = Product.objects.create(
+            article='OZON-1',
+            name='Товар Ozon',
+            quantity=5,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+        )
+
+        first_result = self.service.sync_postings(date(2026, 4, 1), date(2026, 4, 30))
+        second_result = self.service.sync_postings(date(2026, 4, 1), date(2026, 4, 30))
+
+        self.assertEqual(first_result.sales_created, 3)
+        self.assertEqual(second_result.sales_created, 0)
+        self.assertEqual(second_result.sales_skipped, 3)
+        self.assertEqual(SaleRecord.objects.count(), 3)
+        self.assertEqual(SaleRecord.objects.filter(posting_number='FBO-1').count(), 2)
+        self.assertEqual(SaleRecord.objects.filter(posting_number='FBS-1').count(), 1)
+        self.assertEqual(SaleRecord.objects.filter(sale_date=date(2026, 4, 20)).count(), 2)
+        self.assertEqual(SaleRecord.objects.filter(sale_date=date(2026, 4, 21)).count(), 1)
+        self.assertEqual(SaleRecord.objects.first().product, product)
+
+
+class ProductListTests(TestCase):
+    def test_product_list_is_paginated_by_groups(self):
+        for index in range(30):
+            Product.objects.create(
+                article=f'SKU-{index:02d}',
+                name=f'Товар {index:02d}',
+                quantity=1,
+                purchase_price=Decimal('100.00'),
+                delivery_cost=Decimal('20.00'),
+            )
+
+        first_page = self.client.get(reverse('product_list'))
+        second_page = self.client.get(reverse('product_list'), {'page': 2})
+
+        self.assertEqual(first_page.status_code, 200)
+        self.assertEqual(second_page.status_code, 200)
+        self.assertEqual(len(first_page.context['groups']), 25)
+        self.assertEqual(len(second_page.context['groups']), 5)
+        self.assertEqual(first_page.context['paginator'].num_pages, 2)
+        self.assertEqual(second_page.context['page_obj'].number, 2)
 
 
 class SaleUploadTests(TestCase):
@@ -124,6 +261,12 @@ class SupplyUploadTests(TestCase):
 
 
 class ExportTests(TestCase):
+    def test_sales_report_period_defaults_date_to_to_today(self):
+        response = self.client.get(reverse('sales_report_period'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['form'].initial['date_to'], timezone.localdate())
+
     def test_sales_report_uses_sale_time_cost_price(self):
         product = Product.objects.create(
             article='SKU-1',
@@ -143,6 +286,56 @@ class ExportTests(TestCase):
 
         self.assertEqual(sheet['D2'].value, 125)
         self.assertEqual(sheet['F2'].value, 75)
+
+    def test_sales_report_filters_by_period(self):
+        product = Product.objects.create(
+            article='SKU-1',
+            name='Тестовый товар',
+            quantity=1,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('25.00'),
+        )
+        SaleRecord.objects.create(
+            product=product,
+            sale_type='free',
+            income=Decimal('200.00'),
+            sale_date=date(2026, 4, 10),
+        )
+        SaleRecord.objects.create(
+            product=product,
+            sale_type='free',
+            income=Decimal('300.00'),
+            sale_date=date(2026, 4, 20),
+        )
+
+        response = self.client.get(reverse('export_sales_report'), {
+            'date_from': '2026-04-15',
+            'date_to': '2026-04-30',
+        })
+        workbook = load_workbook(BytesIO(response.content))
+        sheet = workbook.active
+
+        self.assertEqual(sheet.max_row, 2)
+        self.assertEqual(sheet['E2'].value, 300)
+        self.assertEqual(sheet['G2'].value.date(), date(2026, 4, 20))
+
+    def test_sales_report_rejects_invalid_period(self):
+        response = self.client.get(reverse('export_sales_report'), {
+            'date_from': '2026-04-30',
+            'date_to': '2026-04-01',
+        })
+
+        self.assertRedirects(response, reverse('sales_report_period'))
+
+    def test_sales_report_does_not_download_empty_period(self):
+        response = self.client.get(reverse('export_sales_report'), {
+            'date_from': '2026-04-01',
+            'date_to': '2026-04-30',
+        }, follow=True)
+
+        self.assertRedirects(response, reverse('sales_report_period'))
+        messages = [message.message for message in get_messages(response.wsgi_request)]
+        self.assertTrue(any('За выбранный период продаж нет' in message for message in messages))
 
 
 class ParseFileTests(TestCase):

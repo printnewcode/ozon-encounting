@@ -34,6 +34,9 @@ DEBUG = True if os.getenv('DEBUG').lower() == "true" else False
 LOCAL = True if os.getenv('LOCAL').lower() == "true" else False
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS').split(',') if os.getenv('ALLOWED_HOSTS') else '*'
 
+OZON_CLIENT_ID = os.getenv('OZON_CLIENT_ID', '')
+OZON_API_KEY = os.getenv('OZON_API_KEY', '')
+
 
 # Application definition
 
