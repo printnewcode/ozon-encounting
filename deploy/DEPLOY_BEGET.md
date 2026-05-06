@@ -84,21 +84,32 @@ systemctl start ozon-encounting-sync.service
 journalctl -u ozon-encounting-sync.service -n 100 --no-pager
 ```
 
-## 5. Issue SSL certificate
+## 5. Add temporary HTTP Nginx site
+
+Install the HTTP-only site first. This config does not reference missing SSL files, so `nginx -t` can pass before the certificate exists.
+
+```bash
+cp /home/ozon-encounting/deploy/nginx-server-jgetbot-http.conf /etc/nginx/sites-available/jgetbot.conf
+ln -s /etc/nginx/sites-available/jgetbot.conf /etc/nginx/sites-enabled/jgetbot.conf
+mkdir -p /var/www/letsencrypt
+nginx -t
+systemctl reload nginx
+```
+
+## 6. Issue SSL certificate
 
 After DNS starts resolving to the VPS, issue the certificate:
 
 ```bash
-certbot certonly --nginx -d jgetbot.store -d www.jgetbot.store
+certbot certonly --webroot -w /var/www/letsencrypt -d jgetbot.store -d www.jgetbot.store
 ```
 
-## 6. Add Nginx site
+## 7. Enable HTTPS Nginx site
 
-Install the Nginx site:
+Replace the temporary HTTP config with the HTTPS config:
 
 ```bash
 cp /home/ozon-encounting/deploy/nginx-server-jgetbot.conf /etc/nginx/sites-available/jgetbot.conf
-ln -s /etc/nginx/sites-available/jgetbot.conf /etc/nginx/sites-enabled/jgetbot.conf
 ```
 
 Then check and reload:
@@ -114,7 +125,7 @@ The app should open at:
 https://jgetbot.store/
 ```
 
-## 7. Useful operations
+## 8. Useful operations
 
 Restart the app:
 
