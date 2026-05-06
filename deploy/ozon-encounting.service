@@ -1,0 +1,16 @@
+[Unit]
+Description=Ozon Encounting Django app
+After=network.target
+
+[Service]
+User=root
+Group=root
+WorkingDirectory=/home/ozon-encounting
+EnvironmentFile=/home/ozon-encounting/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ozon-encounting/venv/bin/gunicorn Encounting.wsgi:application --bind 127.0.0.1:8083 --workers 2 --timeout 120 --access-logfile - --error-logfile -
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

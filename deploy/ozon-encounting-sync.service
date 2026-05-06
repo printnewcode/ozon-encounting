@@ -1,0 +1,12 @@
+[Unit]
+Description=Sync Ozon data for Ozon Encounting
+After=network.target ozon-encounting.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/home/ozon-encounting
+EnvironmentFile=/home/ozon-encounting/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ozon-encounting/venv/bin/python manage.py sync_ozon

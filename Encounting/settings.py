@@ -11,34 +11,45 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 import os
 from pathlib import Path
+
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 
 load_dotenv()
 
-# Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {'1', 'true', 'yes', 'on'}
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv(
-    'SECRET_KEY',
-    'django-insecure-4@^xl1-))3m+t18!iw7x0lb4#qk#nq$_nut=p!=g1h3p5ab6+f',
+
+def env_list(name: str, default: list[str] | None = None) -> list[str]:
+    value = os.getenv(name)
+    if not value:
+        return default or []
+    return [item.strip() for item in value.split(',') if item.strip()]
+
+
+DEBUG = env_bool('DEBUG', False)
+LOCAL = env_bool('LOCAL', False)
+
+SECRET_KEY = os.getenv('SECRET_KEY') or (
+    'django-insecure-4@^xl1-))3m+t18!iw7x0lb4#qk#nq$_nut=p!=g1h3p5ab6+f' if DEBUG else ''
 )
+if not SECRET_KEY:
+    raise ImproperlyConfigured('SECRET_KEY must be configured when DEBUG=False.')
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True if os.getenv('DEBUG').lower() == "true" else False
-LOCAL = True if os.getenv('LOCAL').lower() == "true" else False
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS').split(',') if os.getenv('ALLOWED_HOSTS') else '*'
+ALLOWED_HOSTS = env_list('ALLOWED_HOSTS', ['*'] if DEBUG else [])
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS')
 
 OZON_CLIENT_ID = os.getenv('OZON_CLIENT_ID', '')
 OZON_API_KEY = os.getenv('OZON_API_KEY', '')
 
-
-# Application definition
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -61,6 +72,7 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'Encounting.urls'
+FORCE_SCRIPT_NAME = os.getenv('FORCE_SCRIPT_NAME') or None
 
 TEMPLATES = [
     {
@@ -80,31 +92,40 @@ TEMPLATES = [
 WSGI_APPLICATION = 'Encounting.wsgi.application'
 
 
-# Database
-# https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+DB_ENGINE = os.getenv('DB_ENGINE', 'sqlite').strip().lower()
 
-if LOCAL:
+if DB_ENGINE == 'sqlite':
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
+            'NAME': os.getenv('SQLITE_PATH', BASE_DIR / 'db.sqlite3'),
         }
     }
-else:
+elif DB_ENGINE == 'mysql':
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.mysql',
-            'NAME': os.environ.get('DB_NAME', 'jget_db'),
-            'USER': os.environ.get('DB_USER', 'jget_user'),
-            'PASSWORD': os.environ.get('DB_PASSWORD', 'jget_pass'),
+            'NAME': os.environ['DB_NAME'],
+            'USER': os.environ['DB_USER'],
+            'PASSWORD': os.environ['DB_PASSWORD'],
             'HOST': os.environ.get('DB_HOST', 'localhost'),
             'PORT': os.environ.get('DB_PORT', '3306'),
         }
     }
+elif DB_ENGINE == 'postgresql':
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': os.environ['DB_NAME'],
+            'USER': os.environ['DB_USER'],
+            'PASSWORD': os.environ['DB_PASSWORD'],
+            'HOST': os.environ.get('DB_HOST', 'localhost'),
+            'PORT': os.environ.get('DB_PORT', '5432'),
+        }
+    }
+else:
+    raise ImproperlyConfigured('DB_ENGINE must be one of: sqlite, mysql, postgresql.')
 
-
-# Password validation
-# https://docs.djangoproject.com/en/6.0/ref/settings/#auth-password-validators
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -122,9 +143,6 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-# Internationalization
-# https://docs.djangoproject.com/en/6.0/topics/i18n/
-
 LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Europe/Moscow'
@@ -134,13 +152,12 @@ USE_I18N = True
 USE_TZ = True
 
 
-# Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/6.0/howto/static-files/
+STATIC_URL = os.getenv('STATIC_URL', '/static/')
+STATIC_ROOT = Path(os.getenv('STATIC_ROOT', BASE_DIR / 'staticfiles'))
 
-# Если работает локально - грузит статику в папку /static
-if LOCAL:
-    STATIC_URL = 'static/'
-# Когда на хостинге - грузит в public_html
-else:
-    STATIC_URL = '/static/'
-    STATIC_ROOT = BASE_DIR / '..' / '..' / 'public_html' / 'static'
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+SECURE_SSL_REDIRECT = env_bool('SECURE_SSL_REDIRECT', not DEBUG)
+SESSION_COOKIE_SECURE = env_bool('SESSION_COOKIE_SECURE', not DEBUG)
+CSRF_COOKIE_SECURE = env_bool('CSRF_COOKIE_SECURE', not DEBUG)
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
