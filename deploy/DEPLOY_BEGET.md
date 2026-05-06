@@ -7,7 +7,7 @@ Target server assumptions:
 - Python 3.12 is available as `python3`
 - The app will run from `/home/ozon-encounting`
 - Gunicorn will listen on `127.0.0.1:8083`
-- Public URL: `https://jgetbot.store/`
+- Public URL: `https://jget-it.store/`
 - Database: SQLite at `/home/ozon-encounting/db.sqlite3`
 
 ## 1. Copy project
@@ -33,7 +33,7 @@ Edit `/home/ozon-encounting/.env`:
 - set `OZON_API_KEY`
 - keep `FORCE_SCRIPT_NAME` empty for deployment at the domain root
 
-Point DNS for `jgetbot.store` and `www.jgetbot.store` to the VPS public IPv4 before issuing SSL.
+Point DNS for `jget-it.store` and `www.jget-it.store` to the VPS public IPv4 before issuing SSL.
 
 Generate a secret key on the server:
 
@@ -89,8 +89,8 @@ journalctl -u ozon-encounting-sync.service -n 100 --no-pager
 Install the HTTP-only site first. This config does not reference missing SSL files, so `nginx -t` can pass before the certificate exists.
 
 ```bash
-cp /home/ozon-encounting/deploy/nginx-server-jgetbot-http.conf /etc/nginx/sites-available/jgetbot.conf
-ln -s /etc/nginx/sites-available/jgetbot.conf /etc/nginx/sites-enabled/jgetbot.conf
+cp /home/ozon-encounting/deploy/nginx-server-jget-it-store-http.conf /etc/nginx/sites-available/jget-it-store.conf
+ln -s /etc/nginx/sites-available/jget-it-store.conf /etc/nginx/sites-enabled/jget-it-store.conf
 mkdir -p /var/www/letsencrypt
 nginx -t
 systemctl reload nginx
@@ -101,7 +101,7 @@ systemctl reload nginx
 After DNS starts resolving to the VPS, issue the certificate:
 
 ```bash
-certbot certonly --webroot -w /var/www/letsencrypt -d jgetbot.store -d www.jgetbot.store
+certbot certonly --webroot -w /var/www/letsencrypt -d jget-it.store -d www.jget-it.store
 ```
 
 ## 7. Enable HTTPS Nginx site
@@ -109,7 +109,7 @@ certbot certonly --webroot -w /var/www/letsencrypt -d jgetbot.store -d www.jgetb
 Replace the temporary HTTP config with the HTTPS config:
 
 ```bash
-cp /home/ozon-encounting/deploy/nginx-server-jgetbot.conf /etc/nginx/sites-available/jgetbot.conf
+cp /home/ozon-encounting/deploy/nginx-server-jget-it-store.conf /etc/nginx/sites-available/jget-it-store.conf
 ```
 
 Then check and reload:
@@ -122,7 +122,7 @@ systemctl reload nginx
 The app should open at:
 
 ```text
-https://jgetbot.store/
+https://jget-it.store/
 ```
 
 ## 8. Useful operations
