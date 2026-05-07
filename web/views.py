@@ -1,8 +1,8 @@
 import io
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 import pandas as pd
 from django.contrib import messages
@@ -27,6 +27,28 @@ DATE_HEADER = 'Дата продажи'
 CSV_ENCODINGS = ('utf-8-sig', 'utf-8', 'cp1251')
 MAX_VISIBLE_WARNINGS = 5
 PRODUCT_GROUPS_PER_PAGE = 25
+PRODUCT_FILTERS = ('sold', 'in_stock', 'in_sale', 'profit_positive', 'profit_negative')
+PRODUCT_SORTS = ('article', 'name', 'status', 'cost', 'income', 'profit', 'date')
+
+
+def selected_product_filters(request):
+    if 'filters_applied' not in request.GET:
+        return list(PRODUCT_FILTERS)
+    return [value for value in request.GET.getlist('filters') if value in PRODUCT_FILTERS]
+
+
+def product_list_query(request, **updates) -> str:
+    query = request.GET.copy()
+    query.pop('page', None)
+    for key, value in updates.items():
+        query.pop(key, None)
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple)):
+            query.setlist(key, [str(item) for item in value])
+        else:
+            query[key] = str(value)
+    return urlencode(list(query.lists()), doseq=True)
 
 
 def export_filename(name: str) -> str:
@@ -318,6 +340,13 @@ def upload_sales(request):
 
 def product_list(request):
     groups_dict = {}
+    active_filters = selected_product_filters(request)
+    active_sort = request.GET.get('sort', 'status')
+    if active_sort not in PRODUCT_SORTS:
+        active_sort = 'status'
+    active_direction = request.GET.get('direction', 'asc')
+    if active_direction not in ('asc', 'desc'):
+        active_direction = 'asc'
     status_order = {
         'in_stock': 0,
         'in_sale': 1,
@@ -337,6 +366,7 @@ def product_list(request):
                 'total_income': Decimal('0'),
                 'total_profit': Decimal('0'),
                 'has_sales': False,
+                'last_sale_date': None,
                 'sort_status': status_order.get(status_key, 99),
             }
         return groups_dict[group_key]
@@ -379,22 +409,154 @@ def product_list(request):
         if sale.profit:
             group['total_profit'] += sale.profit
         group['has_sales'] = True
+        if group['last_sale_date'] is None or sale.sale_date > group['last_sale_date']:
+            group['last_sale_date'] = sale.sale_date
 
     groups = []
-    for group in sorted(groups_dict.values(), key=lambda item: (item['sort_status'], item['article'], item['name'])):
+    def is_group_visible(group):
+        if group['status_key'] not in active_filters:
+            return False
+        if group['status_key'] == 'sold':
+            if group['total_profit'] < 0:
+                return 'profit_negative' in active_filters
+            return 'profit_positive' in active_filters
+        return True
+
+    def sort_value(group):
+        if active_sort == 'article':
+            return str(group['article']).lower()
+        if active_sort == 'name':
+            return str(group['name']).lower()
+        if active_sort == 'status':
+            return group['sort_status']
+        if active_sort == 'cost':
+            return group['rows'][0]['cost_price']
+        if active_sort == 'income':
+            return group['total_income'] if group['has_sales'] else Decimal('-1')
+        if active_sort == 'profit':
+            return group['total_profit']
+        if active_sort == 'date':
+            return group['last_sale_date'] or date.min
+        return group['sort_status']
+
+    for group in groups_dict.values():
+        if not is_group_visible(group):
+            continue
         group['header_status_key'] = group['status_key']
         group['header_status_label'] = group['status_label']
         group['header_cost'] = group['rows'][0]['cost_price']
         groups.append(group)
 
+    groups.sort(
+        key=lambda item: (sort_value(item), item['sort_status'], str(item['article']).lower(), str(item['name']).lower()),
+        reverse=active_direction == 'desc',
+    )
+
     paginator = Paginator(groups, PRODUCT_GROUPS_PER_PAGE)
     page_obj = paginator.get_page(request.GET.get('page'))
+    page_query = product_list_query(request)
+
+    table_headers = [
+        ('article', 0, 'str', 'Артикул'),
+        ('name', 1, 'str', 'Название'),
+        ('status', 2, 'str', 'Состояние'),
+        ('cost', 3, 'num', 'Себестоимость'),
+        ('income', 4, 'num', 'Доход'),
+        ('profit', 5, 'num', 'Прибыль'),
+        ('date', 6, 'date', 'Дата продажи'),
+    ]
+    table_headers = [
+        {
+            'key': key,
+            'col': col,
+            'type': value_type,
+            'label': label,
+            'direction': active_direction if key == active_sort else '',
+            'url': '?' + product_list_query(
+                request,
+                sort=key,
+                direction='desc' if key == active_sort and active_direction == 'asc' else 'asc',
+            ),
+        }
+        for key, col, value_type, label in table_headers
+    ]
 
     return render(request, 'web/product_list.html', {
         'groups': page_obj.object_list,
         'page_obj': page_obj,
         'paginator': paginator,
         'total_groups': paginator.count,
+        'active_filters': active_filters,
+        'active_sort': active_sort,
+        'active_direction': active_direction,
+        'page_query_prefix': f'{page_query}&' if page_query else '',
+        'table_headers': table_headers,
+    })
+
+
+def sales_statistics(request):
+    initial = {'date_to': timezone.localdate()}
+    form = SalesReportPeriodForm(request.GET or None, initial=initial)
+    date_from = None
+    date_to = timezone.localdate()
+    has_period = bool(request.GET.get('date_from') or request.GET.get('date_to'))
+
+    if form.is_valid():
+        date_from = form.cleaned_data.get('date_from')
+        date_to = form.cleaned_data.get('date_to') or (timezone.localdate() if has_period else None)
+    elif request.GET:
+        messages.error(request, 'Проверьте даты периода.')
+
+    def build_sales_stats(sales_queryset):
+        stats = {
+            'sales_count': 0,
+            'income': Decimal('0'),
+            'profit': Decimal('0'),
+            'positive_count': 0,
+            'negative_count': 0,
+            'avg_profit': Decimal('0'),
+        }
+        for sale in sales_queryset:
+            profit = sale.profit or Decimal('0')
+            stats['sales_count'] += 1
+            stats['income'] += sale.income or Decimal('0')
+            stats['profit'] += profit
+            if profit < 0:
+                stats['negative_count'] += 1
+            else:
+                stats['positive_count'] += 1
+        if stats['sales_count']:
+            stats['avg_profit'] = stats['profit'] / stats['sales_count']
+        return stats
+
+    visible_sales = SaleRecord.objects.select_related('product').order_by('sale_date', 'created_at')
+    if has_period:
+        if date_from:
+            visible_sales = visible_sales.filter(sale_date__gte=date_from)
+        if date_to:
+            visible_sales = visible_sales.filter(sale_date__lte=date_to)
+
+    stock_stats = {
+        'in_stock_count': 0,
+        'in_sale_count': 0,
+        'stock_value': Decimal('0'),
+    }
+    for product in Product.objects.filter(status__in=['in_stock', 'in_sale']):
+        quantity = max(product.quantity, 0)
+        if product.status == 'in_stock':
+            stock_stats['in_stock_count'] += quantity
+        elif product.status == 'in_sale':
+            stock_stats['in_sale_count'] += quantity
+        stock_stats['stock_value'] += product.cost_price * quantity
+
+    return render(request, 'web/statistics.html', {
+        'form': form,
+        'date_from': date_from,
+        'date_to': date_to,
+        'sales_stats': build_sales_stats(visible_sales),
+        'sales_stats_title': 'За период' if has_period else 'За все время',
+        'has_period': has_period,
+        'stock_stats': stock_stats,
     })
 
 

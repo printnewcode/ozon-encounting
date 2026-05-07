@@ -2,12 +2,18 @@
     cursor: pointer;
     user-select: none;
     position: relative;
-    padding-right: 22px !important;
 }
 .sortable:hover { color: #aaa; }
-.sortable::after       { content: '↕'; position: absolute; right: 6px; opacity: 0.35; font-size: 11px; }
-.sortable.asc::after   { content: '↑'; opacity: 0.8; }
-.sortable.desc::after  { content: '↓'; opacity: 0.8; }
+.sortable a {
+    align-items: center;
+    color: inherit;
+    display: inline-flex;
+    gap: 6px;
+    text-decoration: none;
+}
+.sortable a::after       { content: '↕'; opacity: 0.35; font-size: 11px; line-height: 1; }
+.sortable.asc a::after   { content: '↑'; opacity: 0.8; }
+.sortable.desc a::after  { content: '↓'; opacity: 0.8; }
 
 .data-card {
     overflow-x: auto;
@@ -105,6 +111,66 @@
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 10px;
+}
+
+.table-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    margin: 0 0 12px;
+}
+
+.filter-menu {
+    position: relative;
+}
+
+.filter-menu summary {
+    list-style: none;
+}
+
+.filter-menu summary::-webkit-details-marker {
+    display: none;
+}
+
+.filter-panel {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 8px);
+    z-index: 20;
+    min-width: 180px;
+    padding: 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 14px 32px rgba(17,24,39,.14), 0 4px 10px rgba(17,24,39,.08);
+}
+
+.filter-panel label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 2px;
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.filter-panel input {
+    width: 15px;
+    height: 15px;
+    accent-color: var(--accent);
+}
+
+.filter-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.filter-actions .btn-primary-saas,
+.filter-actions .btn-secondary-saas {
+    padding: 6px 10px;
+    font-size: 12.5px;
 }
 
 .pagination-bar {

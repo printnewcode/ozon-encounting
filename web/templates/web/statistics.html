@@ -1,0 +1,51 @@
+{% extends "web/base.html" %}
+{% load static %}
+
+{% block title %}Статистика - Jget{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'web/css/statistics.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <div>
+        <h1 class="page-title">Статистика</h1>
+        <p class="page-subtitle">Продажи за все время и за выбранный период</p>
+    </div>
+</div>
+
+<form class="stats-period" method="get" action="{% url 'sales_statistics' %}">
+    <div>
+        {{ form.date_from.label_tag }}
+        {{ form.date_from }}
+    </div>
+    <div>
+        {{ form.date_to.label_tag }}
+        {{ form.date_to }}
+    </div>
+    <button type="submit" class="btn-primary-saas">Показать</button>
+    <a href="{% url 'sales_statistics' %}" class="btn-secondary-saas">Сброс</a>
+</form>
+
+<section class="stats-section">
+    <div class="section-title">{{ sales_stats_title }}</div>
+    <div class="stats-grid">
+        <div class="stat-card"><span>Продаж</span><strong class="stat-blue">{{ sales_stats.sales_count }}</strong></div>
+        <div class="stat-card"><span>Доход</span><strong class="stat-teal">{{ sales_stats.income|floatformat:2 }}</strong></div>
+        <div class="stat-card"><span>Прибыль</span><strong class="{% if sales_stats.profit < 0 %}stat-red{% else %}stat-green{% endif %}">{{ sales_stats.profit|floatformat:2 }}</strong></div>
+        <div class="stat-card"><span>Средняя прибыль</span><strong class="{% if sales_stats.avg_profit < 0 %}stat-red{% else %}stat-green{% endif %}">{{ sales_stats.avg_profit|floatformat:2 }}</strong></div>
+        <div class="stat-card"><span>В плюс</span><strong class="stat-green">{{ sales_stats.positive_count }}</strong></div>
+        <div class="stat-card"><span>В минус</span><strong class="stat-red">{{ sales_stats.negative_count }}</strong></div>
+    </div>
+</section>
+
+<section class="stats-section">
+    <div class="section-title">Остатки сейчас</div>
+    <div class="stats-grid stats-grid-compact">
+        <div class="stat-card"><span>Склад</span><strong class="stat-green">{{ stock_stats.in_stock_count }}</strong></div>
+        <div class="stat-card"><span>В продаже</span><strong class="stat-amber">{{ stock_stats.in_sale_count }}</strong></div>
+        <div class="stat-card"><span>Себестоимость остатков</span><strong class="stat-blue">{{ stock_stats.stock_value|floatformat:2 }}</strong></div>
+    </div>
+</section>
+{% endblock %}

@@ -160,6 +160,90 @@ class ProductListTests(TestCase):
         self.assertEqual(first_page.context['paginator'].num_pages, 2)
         self.assertEqual(second_page.context['page_obj'].number, 2)
 
+    def test_product_list_filters_groups_and_sets_last_sale_date(self):
+        positive_product = Product.objects.create(
+            article='SKU-POS',
+            name='Positive',
+            quantity=0,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='sold',
+        )
+        negative_product = Product.objects.create(
+            article='SKU-NEG',
+            name='Negative',
+            quantity=0,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='sold',
+        )
+        Product.objects.create(
+            article='SKU-STOCK',
+            name='Stock',
+            quantity=1,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='in_stock',
+        )
+        SaleRecord.objects.create(product=positive_product, sale_type='free', income=Decimal('200.00'), sale_date=date(2026, 4, 10))
+        SaleRecord.objects.create(product=positive_product, sale_type='free', income=Decimal('210.00'), sale_date=date(2026, 4, 20))
+        SaleRecord.objects.create(product=negative_product, sale_type='free', income=Decimal('50.00'), sale_date=date(2026, 4, 15))
+
+        response = self.client.get(reverse('product_list'), {
+            'filters_applied': '1',
+            'filters': ['sold', 'profit_positive'],
+        })
+
+        groups = response.context['groups']
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['article'], 'SKU-POS')
+        self.assertEqual(groups[0]['last_sale_date'], date(2026, 4, 20))
+
+    def test_product_list_can_filter_to_in_sale_only(self):
+        Product.objects.create(
+            article='SKU-STOCK',
+            name='Stock',
+            quantity=1,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='in_stock',
+        )
+        Product.objects.create(
+            article='SKU-SALE',
+            name='Sale',
+            quantity=1,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='in_sale',
+        )
+
+        response = self.client.get(reverse('product_list'), {
+            'filters_applied': '1',
+            'filters': ['in_sale'],
+        })
+
+        groups = response.context['groups']
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['article'], 'SKU-SALE')
+
+    def test_product_list_sorts_all_groups_before_pagination(self):
+        for index in range(30):
+            Product.objects.create(
+                article=f'SKU-{index:02d}',
+                name=f'Product {index:02d}',
+                quantity=1,
+                purchase_price=Decimal('100.00'),
+                delivery_cost=Decimal('20.00'),
+            )
+
+        first_page = self.client.get(reverse('product_list'), {'sort': 'article', 'direction': 'desc'})
+        second_page = self.client.get(reverse('product_list'), {'sort': 'article', 'direction': 'desc', 'page': 2})
+
+        self.assertEqual(first_page.context['groups'][0]['article'], 'SKU-29')
+        self.assertEqual(first_page.context['groups'][-1]['article'], 'SKU-05')
+        self.assertEqual(second_page.context['groups'][0]['article'], 'SKU-04')
+        self.assertEqual(second_page.context['groups'][-1]['article'], 'SKU-00')
+
 
 class SaleUploadTests(TestCase):
     def setUp(self):
@@ -261,6 +345,51 @@ class SupplyUploadTests(TestCase):
 
 
 class ExportTests(TestCase):
+    def test_statistics_page_defaults_to_all_time_stats(self):
+        product = Product.objects.create(
+            article='SKU-1',
+            name='Product',
+            quantity=2,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='in_sale',
+        )
+        SaleRecord.objects.create(product=product, sale_type='free', income=Decimal('200.00'), sale_date=date(2026, 4, 10))
+        SaleRecord.objects.create(product=product, sale_type='free', income=Decimal('50.00'), sale_date=date(2026, 4, 20))
+
+        response = self.client.get(reverse('sales_statistics'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context['has_period'])
+        self.assertEqual(response.context['sales_stats_title'], 'За все время')
+        self.assertEqual(response.context['sales_stats']['sales_count'], 2)
+        self.assertEqual(response.context['sales_stats']['profit'], Decimal('10.00'))
+        self.assertEqual(response.context['stock_stats']['in_sale_count'], 2)
+
+    def test_statistics_page_shows_only_period_stats_when_dates_are_selected(self):
+        product = Product.objects.create(
+            article='SKU-1',
+            name='Product',
+            quantity=2,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='in_sale',
+        )
+        SaleRecord.objects.create(product=product, sale_type='free', income=Decimal('200.00'), sale_date=date(2026, 4, 10))
+        SaleRecord.objects.create(product=product, sale_type='free', income=Decimal('50.00'), sale_date=date(2026, 4, 20))
+
+        response = self.client.get(reverse('sales_statistics'), {
+            'date_from': '2026-04-15',
+            'date_to': '2026-04-30',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context['has_period'])
+        self.assertEqual(response.context['sales_stats_title'], 'За период')
+        self.assertEqual(response.context['sales_stats']['sales_count'], 1)
+        self.assertEqual(response.context['sales_stats']['profit'], Decimal('-70.00'))
+        self.assertEqual(response.context['stock_stats']['in_sale_count'], 2)
+
     def test_sales_report_period_defaults_date_to_to_today(self):
         response = self.client.get(reverse('sales_report_period'))
 

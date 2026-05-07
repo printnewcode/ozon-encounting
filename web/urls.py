@@ -7,6 +7,7 @@ urlpatterns = [
     path('upload/supply/', views.upload_supply, name='upload_supply'),
     path('upload/sales/', views.upload_sales, name='upload_sales'),
     path('sync/ozon/', views.sync_ozon, name='sync_ozon'),
+    path('statistics/', views.sales_statistics, name='sales_statistics'),
     path('reports/sales/', views.sales_report_period, name='sales_report_period'),
     path('exports/sales-report/', views.export_sales_report, name='export_sales_report'),
     path('exports/stock-balance/', views.export_stock_balance, name='export_stock_balance'),
