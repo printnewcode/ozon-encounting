@@ -1,0 +1,115 @@
+.stats-period {
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 24px;
+    padding: 18px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow-sm);
+}
+
+.stats-period label {
+    display: block;
+    margin-bottom: 6px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.stats-period .form-control {
+    min-width: 180px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 8px 12px;
+    font-size: 13.5px;
+}
+
+.stats-section {
+    margin-top: 22px;
+}
+
+.section-title {
+    margin-bottom: 10px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(160px, 1fr));
+    gap: 12px;
+}
+
+.stats-grid-compact {
+    grid-template-columns: repeat(3, minmax(180px, 1fr));
+}
+
+.stat-card {
+    min-height: 88px;
+    padding: 16px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: var(--shadow-sm);
+}
+
+.stat-card span {
+    display: block;
+    margin-bottom: 8px;
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    font-weight: 600;
+}
+
+.stat-card strong {
+    display: block;
+    color: var(--text-primary);
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.15;
+}
+
+.stat-card strong.stat-blue {
+    color: #2563EB;
+}
+
+.stat-card strong.stat-teal {
+    color: var(--teal);
+}
+
+.stat-card strong.stat-green {
+    color: var(--green);
+}
+
+.stat-card strong.stat-red {
+    color: var(--accent);
+}
+
+.stat-card strong.stat-amber {
+    color: #D97706;
+}
+
+@media (max-width: 900px) {
+    .stats-grid,
+    .stats-grid-compact {
+        grid-template-columns: repeat(2, minmax(150px, 1fr));
+    }
+}
+
+@media (max-width: 560px) {
+    .stats-grid,
+    .stats-grid-compact {
+        grid-template-columns: 1fr;
+    }
+
+    .stats-period .form-control {
+        width: 100%;
+        min-width: 0;
+    }
+}

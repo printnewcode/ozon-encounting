@@ -27,17 +27,35 @@
 
 {% include "web/includes/pagination.html" %}
 
+<form class="table-toolbar" method="get" action="{% url 'product_list' %}">
+    <input type="hidden" name="filters_applied" value="1">
+    <input type="hidden" name="sort" value="{{ active_sort }}">
+    <input type="hidden" name="direction" value="{{ active_direction }}">
+    <details class="filter-menu">
+        <summary class="btn-secondary-saas">Фильтр</summary>
+        <div class="filter-panel">
+            <label><input type="checkbox" name="filters" value="sold" {% if 'sold' in active_filters %}checked{% endif %}> Прод.</label>
+            <label><input type="checkbox" name="filters" value="in_stock" {% if 'in_stock' in active_filters %}checked{% endif %}> Склад</label>
+            <label><input type="checkbox" name="filters" value="in_sale" {% if 'in_sale' in active_filters %}checked{% endif %}> В прод.</label>
+            <label><input type="checkbox" name="filters" value="profit_positive" {% if 'profit_positive' in active_filters %}checked{% endif %}> Плюс</label>
+            <label><input type="checkbox" name="filters" value="profit_negative" {% if 'profit_negative' in active_filters %}checked{% endif %}> Минус</label>
+            <div class="filter-actions">
+                <button type="submit" class="btn-primary-saas">Показать</button>
+                <a href="{% url 'product_list' %}" class="btn-secondary-saas">Сброс</a>
+            </div>
+        </div>
+    </details>
+</form>
+
 <div class="data-card">
     <table class="table-saas" id="productsTable">
         <thead>
             <tr>
-                <th class="sortable" data-col="0" data-type="str">Артикул</th>
-                <th class="sortable" data-col="1" data-type="str">Название</th>
-                <th class="sortable asc" data-col="2" data-type="str">Состояние</th>
-                <th class="sortable" data-col="3" data-type="num">Себестоимость</th>
-                <th class="sortable" data-col="4" data-type="num">Доход</th>
-                <th class="sortable" data-col="5" data-type="num">Прибыль</th>
-                <th class="sortable" data-col="6" data-type="date">Дата продажи</th>
+                {% for header in table_headers %}
+                <th class="sortable{% if header.direction %} {{ header.direction }}{% endif %}" data-col="{{ header.col }}" data-type="{{ header.type }}">
+                    <a href="{{ header.url }}">{{ header.label }}</a>
+                </th>
+                {% endfor %}
             </tr>
         </thead>
         <tbody id="productsBody">
@@ -73,7 +91,9 @@
                         {% endif %}
                     {% endif %}
                 </td>
-                <td data-sort="0"></td>
+                <td data-sort="{% if group.last_sale_date %}{{ group.last_sale_date|date:'Y-m-d' }}{% else %}0{% endif %}">
+                    {% if group.last_sale_date %}{{ group.last_sale_date|date:"d.m.Y" }}{% endif %}
+                </td>
             </tr>
             {% for row in group.rows %}
             <tr class="child-row row-status-{{ row.status_key }}{% if row.status_key == 'sold' %}{% if row.profit < 0 %} row-profit-negative{% else %} row-profit-positive{% endif %}{% endif %}{% if forloop.counter|divisibleby:2 %} child-row-alt{% endif %}">
