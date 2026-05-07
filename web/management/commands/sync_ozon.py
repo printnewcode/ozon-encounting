@@ -30,5 +30,6 @@ class Command(BaseCommand):
             f'products updated={result.products_updated}, '
             f'stocks updated={result.stocks_updated}, '
             f'sales created={result.sales_created}, '
+            f'sales updated={result.sales_updated}, '
             f'sales skipped={result.sales_skipped}.'
         ))

@@ -1,3 +1,4 @@
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone as datetime_timezone
 from decimal import Decimal, InvalidOperation
@@ -16,6 +17,7 @@ class OzonSyncResult:
     stocks_updated: int = 0
     sales_created: int = 0
     sales_skipped: int = 0
+    sales_updated: int = 0
 
 
 BLOCKING_STATUS_MARKERS = (
@@ -82,6 +84,15 @@ def item_sku(item: dict):
     return None
 
 
+def item_key_values(item: dict) -> list[str]:
+    values = [
+        item_offer_id(item),
+        item_sku(item),
+        item.get('product_id'),
+    ]
+    return list(dict.fromkeys(str(value).strip() for value in values if value not in (None, '')))
+
+
 def item_visibility(item: dict) -> str:
     return str(item.get('visibility') or item.get('visible') or '').strip()
 
@@ -144,6 +155,113 @@ def posting_product_price(product: dict) -> Decimal:
         return parse_decimal(actions[0].get('price'))
 
     return Decimal('0.00')
+
+
+def operation_posting_number(operation: dict) -> str:
+    posting = operation.get('posting') or {}
+    return str(
+        posting.get('posting_number')
+        or operation.get('posting_number')
+        or operation.get('order_number')
+        or ''
+    ).strip()
+
+
+def operation_item_weight(item: dict) -> Decimal:
+    for field in ('accruals_for_sale', 'price', 'amount', 'payout'):
+        value = item.get(field)
+        if value not in (None, ''):
+            return abs(parse_decimal(value))
+    return Decimal('0.00')
+
+
+def operation_item_net_amount(item: dict) -> Decimal:
+    if item.get('amount') not in (None, ''):
+        return parse_decimal(item.get('amount'))
+    if item.get('payout') not in (None, ''):
+        return parse_decimal(item.get('payout'))
+
+    total = Decimal('0.00')
+    for field in ('accruals_for_sale', 'sale_commission'):
+        if item.get(field) not in (None, ''):
+            total += parse_decimal(item.get(field))
+    return total
+
+
+@dataclass
+class OzonFinanceIndex:
+    item_amounts: dict
+    posting_amounts: dict
+
+    def amount_for_item(self, posting_number: str, item: dict, posting_products_count: int) -> Decimal | None:
+        posting_number = str(posting_number or '').strip()
+        if not posting_number:
+            return None
+
+        for key in item_key_values(item):
+            amount = self.item_amounts.get((posting_number, key))
+            if amount is not None:
+                return amount
+
+        if posting_products_count == 1:
+            return self.posting_amounts.get(posting_number)
+
+        return None
+
+
+def build_finance_index(operations) -> OzonFinanceIndex:
+    item_amounts = defaultdict(Decimal)
+    posting_amounts = defaultdict(Decimal)
+
+    for operation in operations:
+        posting_number = operation_posting_number(operation)
+        items = operation.get('items') or []
+        if not posting_number or not items:
+            continue
+
+        operation_amount = parse_decimal(operation.get('amount'))
+        if operation_amount == Decimal('0.00'):
+            operation_amount = sum((operation_item_net_amount(item) for item in items), Decimal('0.00'))
+
+        if operation_amount == Decimal('0.00'):
+            continue
+
+        weights = [operation_item_weight(item) for item in items]
+        total_weight = sum(weights, Decimal('0.00'))
+        allocated = Decimal('0.00')
+
+        for index, item in enumerate(items):
+            keys = item_key_values(item)
+            if not keys:
+                continue
+
+            if index == len(items) - 1:
+                item_amount = operation_amount - allocated
+            elif total_weight:
+                item_amount = (operation_amount * weights[index] / total_weight).quantize(Decimal('0.01'))
+                allocated += item_amount
+            else:
+                item_amount = (operation_amount / len(items)).quantize(Decimal('0.01'))
+                allocated += item_amount
+
+            for key in keys:
+                item_amounts[(posting_number, key)] += item_amount
+            posting_amounts[posting_number] += item_amount
+
+    return OzonFinanceIndex(dict(item_amounts), dict(posting_amounts))
+
+
+def posting_product_net_income(
+    product: dict,
+    posting_number: str,
+    quantity: int,
+    finance_index: OzonFinanceIndex,
+    posting_products_count: int,
+) -> Decimal:
+    total = finance_index.amount_for_item(posting_number, product, posting_products_count)
+    if total is not None and quantity > 0:
+        return (total / quantity).quantize(Decimal('0.01'))
+    return posting_product_price(product)
 
 
 def product_defaults(item: dict) -> dict:
@@ -261,26 +379,35 @@ class OzonSyncService:
         result = OzonSyncResult()
         date_from_value = as_ozon_datetime(date_from)
         date_to_value = as_ozon_datetime(date_to, end_of_day=True)
+        finance_index = build_finance_index(self.client.finance_transactions(date_from_value, date_to_value))
 
         for posting in self.client.fbo_postings(date_from_value, date_to_value):
-            self.create_sales_from_posting(posting, 'fbo', result)
+            self.create_sales_from_posting(posting, 'fbo', result, finance_index)
 
         for posting in self.client.fbs_postings(date_from_value, date_to_value):
-            self.create_sales_from_posting(posting, 'fbs', result)
+            self.create_sales_from_posting(posting, 'fbs', result, finance_index)
 
         return result
 
-    def create_sales_from_posting(self, posting: dict, schema: str, result: OzonSyncResult) -> None:
+    def create_sales_from_posting(
+        self,
+        posting: dict,
+        schema: str,
+        result: OzonSyncResult,
+        finance_index: OzonFinanceIndex,
+    ) -> None:
         posting_number = posting.get('posting_number') or posting.get('order_number') or ''
         sale_date = posting_date(posting)
+        products = posting.get('products') or []
+        posting_products_count = len(products)
 
-        for item_index, item in enumerate(posting.get('products') or []):
+        for item_index, item in enumerate(products):
             offer_id = item_offer_id(item)
             if not offer_id:
                 continue
 
             quantity = int(item.get('quantity') or 1)
-            price = posting_product_price(item)
+            income = posting_product_net_income(item, posting_number, quantity, finance_index, posting_products_count)
             product, _ = Product.objects.get_or_create(
                 article=offer_id,
                 defaults=product_defaults(item),
@@ -288,14 +415,19 @@ class OzonSyncService:
 
             for unit_index in range(quantity):
                 external_id = f'ozon:{schema}:{posting_number}:{item_index}:{unit_index}'
-                if SaleRecord.objects.filter(external_id=external_id).exists():
+                existing_sale = SaleRecord.objects.filter(external_id=external_id).first()
+                if existing_sale:
+                    if existing_sale.income != income:
+                        existing_sale.income = income
+                        existing_sale.save()
+                        result.sales_updated += 1
                     result.sales_skipped += 1
                     continue
 
                 SaleRecord.objects.create(
                     product=product,
                     sale_type='ozon',
-                    income=price,
+                    income=income,
                     sale_date=sale_date,
                     external_id=external_id,
                     posting_number=posting_number,
@@ -315,5 +447,6 @@ class OzonSyncService:
             total.stocks_updated += result.stocks_updated
             total.sales_created += result.sales_created
             total.sales_skipped += result.sales_skipped
+            total.sales_updated += result.sales_updated
 
         return total

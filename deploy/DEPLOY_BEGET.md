@@ -96,13 +96,15 @@ nginx -t
 systemctl reload nginx
 ```
 
-## 6. Issue SSL certificate
+## 6. Issue or install SSL certificate
 
-After DNS starts resolving to the VPS, issue the certificate:
+After DNS starts resolving to the VPS, either issue the certificate on the VPS:
 
 ```bash
 certbot certonly --webroot -w /var/www/letsencrypt -d jget-it.store -d www.jget-it.store
 ```
+
+Or install an existing certificate manually and adjust `ssl_certificate` / `ssl_certificate_key` in `/etc/nginx/sites-available/jget-it-store.conf` to the actual paths.
 
 ## 7. Enable HTTPS Nginx site
 

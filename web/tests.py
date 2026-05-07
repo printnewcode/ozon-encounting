@@ -15,6 +15,9 @@ from .views import parse_file
 
 
 class FakeOzonClient:
+    def __init__(self, finance_transactions=None):
+        self._finance_transactions = finance_transactions
+
     def product_list(self):
         return iter([
             {'offer_id': 'OZON-1', 'product_id': 101, 'visibility': 'VISIBLE'},
@@ -51,6 +54,24 @@ class FakeOzonClient:
                 ],
             },
         ])
+
+    def finance_transactions(self, date_from, date_to):
+        if self._finance_transactions is None:
+            return iter([
+                {
+                    'posting': {'posting_number': 'FBO-1'},
+                    'amount': '241.00',
+                    'items': [{'sku': 202, 'accruals_for_sale': '301.00'}],
+                    'services': [{'name': 'delivery', 'price': '-30.00'}],
+                },
+                {
+                    'posting': {'posting_number': 'FBS-1'},
+                    'amount': '150.00',
+                    'items': [{'sku': 202, 'accruals_for_sale': '200.00'}],
+                    'services': [{'name': 'commission', 'price': '-50.00'}],
+                },
+            ])
+        return iter(self._finance_transactions)
 
 
 class ProductModelTests(TestCase):
@@ -137,6 +158,41 @@ class OzonSyncTests(TestCase):
         self.assertEqual(SaleRecord.objects.filter(sale_date=date(2026, 4, 20)).count(), 2)
         self.assertEqual(SaleRecord.objects.filter(sale_date=date(2026, 4, 21)).count(), 1)
         self.assertEqual(SaleRecord.objects.first().product, product)
+        self.assertEqual(
+            list(SaleRecord.objects.order_by('external_id').values_list('income', flat=True)),
+            [Decimal('120.50'), Decimal('120.50'), Decimal('150.00')],
+        )
+        self.assertEqual(
+            list(SaleRecord.objects.order_by('external_id').values_list('profit', flat=True)),
+            [Decimal('0.50'), Decimal('0.50'), Decimal('30.00')],
+        )
+
+    def test_sync_postings_updates_existing_sales_when_finance_appears(self):
+        Product.objects.create(
+            article='OZON-1',
+            name='РўРѕРІР°СЂ Ozon',
+            quantity=5,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+        )
+
+        service_without_finance = OzonSyncService(client=FakeOzonClient(finance_transactions=[]))
+        first_result = service_without_finance.sync_postings(date(2026, 4, 1), date(2026, 4, 30))
+        self.assertEqual(first_result.sales_created, 3)
+        self.assertEqual(
+            list(SaleRecord.objects.order_by('external_id').values_list('income', flat=True)),
+            [Decimal('150.50'), Decimal('150.50'), Decimal('200.00')],
+        )
+
+        second_result = self.service.sync_postings(date(2026, 4, 1), date(2026, 4, 30))
+
+        self.assertEqual(second_result.sales_created, 0)
+        self.assertEqual(second_result.sales_skipped, 3)
+        self.assertEqual(second_result.sales_updated, 3)
+        self.assertEqual(
+            list(SaleRecord.objects.order_by('external_id').values_list('income', flat=True)),
+            [Decimal('120.50'), Decimal('120.50'), Decimal('150.00')],
+        )
 
 
 class ProductListTests(TestCase):

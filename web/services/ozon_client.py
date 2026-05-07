@@ -148,3 +148,29 @@ class OzonSellerClient:
             if len(postings) < limit:
                 break
             offset += limit
+
+    def finance_transactions(self, date_from: str, date_to: str, page_size: int = 1000):
+        page = 1
+
+        while True:
+            data = self.post('/v3/finance/transaction/list', {
+                'filter': {
+                    'date': {
+                        'from': date_from,
+                        'to': date_to,
+                    },
+                    'operation_type': [],
+                    'posting_number': '',
+                    'transaction_type': 'all',
+                },
+                'page': page,
+                'page_size': page_size,
+            })
+            result = data.get('result', {})
+            operations = result.get('operations', [])
+            yield from operations
+
+            page_count = int(result.get('page_count') or 0)
+            if not operations or (page_count and page >= page_count) or len(operations) < page_size:
+                break
+            page += 1
