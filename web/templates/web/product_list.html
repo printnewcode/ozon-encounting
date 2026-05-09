@@ -77,7 +77,22 @@
                     </span>
                 </td>
                 <td data-sort="{{ group.header_cost }}">
-                    {{ group.header_cost }}
+                    <div class="cost-edit-cell">
+                        <span class="row-cost-value">{{ group.header_cost }}</span>
+                        {% if group.header_status_key == 'in_stock' %}
+                        <button
+                            type="button"
+                            class="cost-edit-button"
+                            title="Изменить себестоимость"
+                            aria-label="Изменить себестоимость"
+                            data-product-id="{{ group.primary_product_id }}"
+                            data-product-ids="{{ group.product_ids_value }}"
+                            data-article="{{ group.article }}"
+                            data-name="{{ group.name }}"
+                            data-cost="{{ group.header_cost }}"
+                        >✎</button>
+                        {% endif %}
+                    </div>
                 </td>
                 <td data-sort="{% if group.has_sales %}{{ group.total_income }}{% else %}-1{% endif %}">
                     {% if group.has_sales %}{{ group.total_income }}{% endif %}
@@ -116,7 +131,22 @@
                     </div>
                 </td>
                 <td data-sort="{{ row.cost_price }}">
-                    <div class="child-cell-content">{{ row.cost_price }}</div>
+                    <div class="child-cell-content cost-edit-cell">
+                        <span class="row-cost-value">{{ row.cost_price }}</span>
+                        {% if row.status_key == 'in_stock' %}
+                        <button
+                            type="button"
+                            class="cost-edit-button"
+                            title="Изменить себестоимость"
+                            aria-label="Изменить себестоимость"
+                            data-product-id="{{ row.product_id }}"
+                            data-product-ids="{{ row.product_id }}"
+                            data-article="{{ row.article }}"
+                            data-name="{{ row.name }}"
+                            data-cost="{{ row.cost_price }}"
+                        >✎</button>
+                        {% endif %}
+                    </div>
                 </td>
                 <td data-sort="{% if row.income is not None %}{{ row.income }}{% else %}-1{% endif %}">
                     <div class="child-cell-content">
@@ -160,6 +190,43 @@
 </div>
 
 {% include "web/includes/pagination.html" %}
+
+<div
+    class="cost-modal-backdrop"
+    id="costModal"
+    data-update-url="{% url 'update_cost_price' %}"
+    data-undo-url="{% url 'undo_cost_price' %}"
+    aria-hidden="true"
+>
+    <div class="cost-modal" role="dialog" aria-modal="true" aria-labelledby="costModalTitle">
+        <div class="cost-modal-header">
+            <h2 id="costModalTitle">Изменить себестоимость</h2>
+            <button type="button" class="cost-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <p class="cost-modal-product" id="costModalProduct"></p>
+        <form id="costForm">
+            {% csrf_token %}
+            <input type="hidden" name="product_id" id="costProductId">
+            <label class="cost-field">
+                <span>Новая себестоимость</span>
+                <input type="number" name="cost_price" id="costPriceInput" min="0" step="0.01" inputmode="decimal" required>
+            </label>
+            <label class="cost-checkbox">
+                <input type="checkbox" name="apply_to_sales" id="costApplySales">
+                <span>Применить также и к продажам этого товара</span>
+            </label>
+            <div class="cost-modal-actions">
+                <button type="submit" class="btn-primary-saas">Сохранить</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="cost-toast" id="costToast" aria-live="polite" aria-hidden="true">
+    <div class="cost-toast-progress"></div>
+    <span>Себестоимость изменена</span>
+    <button type="button" class="cost-toast-undo">Отменить</button>
+</div>
 
 <script src="{% static 'web/js/product_list.js' %}"></script>
 {% endblock %}

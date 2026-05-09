@@ -97,6 +97,23 @@ class OzonSellerClient:
             if not cursor or len(items) < limit:
                 break
 
+    def stock_on_warehouses(self, limit: int = 1000):
+        offset = 0
+
+        while True:
+            data = self.post('/v2/analytics/stock_on_warehouses', {
+                'limit': limit,
+                'offset': offset,
+                'warehouse_type': 'ALL',
+            })
+            result = data.get('result') or data
+            rows = result.get('rows', [])
+            yield from rows
+
+            if len(rows) < limit:
+                break
+            offset += limit
+
     def fbo_postings(self, date_from: str, date_to: str, limit: int = 1000):
         offset = 0
 

@@ -15,8 +15,11 @@ from .views import parse_file
 
 
 class FakeOzonClient:
-    def __init__(self, finance_transactions=None):
+    def __init__(self, finance_transactions=None, product_stocks=None, stock_on_warehouses=None):
         self._finance_transactions = finance_transactions
+        self._product_stocks = product_stocks
+        self._stock_on_warehouses = stock_on_warehouses
+        self.finance_transaction_periods = []
 
     def product_list(self):
         return iter([
@@ -29,9 +32,16 @@ class FakeOzonClient:
         ]
 
     def product_stocks(self):
+        if self._product_stocks is not None:
+            return iter(self._product_stocks)
         return iter([
             {'offer_id': 'OZON-1', 'visibility': 'VISIBLE', 'stocks': [{'present': 3}, {'present': 2}]},
         ])
+
+    def stock_on_warehouses(self):
+        if self._stock_on_warehouses is not None:
+            return iter(self._stock_on_warehouses)
+        return iter([])
 
     def fbo_postings(self, date_from, date_to):
         return iter([
@@ -56,6 +66,7 @@ class FakeOzonClient:
         ])
 
     def finance_transactions(self, date_from, date_to):
+        self.finance_transaction_periods.append((date_from, date_to))
         if self._finance_transactions is None:
             return iter([
                 {
@@ -137,6 +148,31 @@ class OzonSyncTests(TestCase):
         self.assertEqual(product.quantity, 5)
         self.assertEqual(product.status, 'in_stock')
 
+    def test_sync_stocks_uses_warehouse_analytics_when_product_stocks_are_empty(self):
+        client = FakeOzonClient(
+            product_stocks=[
+                {'offer_id': 'OZON-1', 'visibility': '', 'stocks': [{'present': 0}]},
+            ],
+            stock_on_warehouses=[
+                {'item_code': 'OZON-1', 'free_to_sell_amount': 15},
+            ],
+        )
+        service = OzonSyncService(client=client)
+        Product.objects.create(
+            article='OZON-1',
+            name='РўРѕРІР°СЂ Ozon',
+            quantity=0,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+        )
+
+        result = service.sync_stocks()
+
+        product = Product.objects.get(article='OZON-1')
+        self.assertEqual(result.stocks_updated, 1)
+        self.assertEqual(product.quantity, 15)
+        self.assertEqual(product.status, 'in_sale')
+
     def test_sync_postings_creates_sales_without_duplicates(self):
         product = Product.objects.create(
             article='OZON-1',
@@ -146,8 +182,8 @@ class OzonSyncTests(TestCase):
             delivery_cost=Decimal('20.00'),
         )
 
-        first_result = self.service.sync_postings(date(2026, 4, 1), date(2026, 4, 30))
-        second_result = self.service.sync_postings(date(2026, 4, 1), date(2026, 4, 30))
+        first_result = self.service.sync_postings(date(2026, 4, 1), date(2026, 4, 28))
+        second_result = self.service.sync_postings(date(2026, 4, 1), date(2026, 4, 28))
 
         self.assertEqual(first_result.sales_created, 3)
         self.assertEqual(second_result.sales_created, 0)
@@ -177,14 +213,14 @@ class OzonSyncTests(TestCase):
         )
 
         service_without_finance = OzonSyncService(client=FakeOzonClient(finance_transactions=[]))
-        first_result = service_without_finance.sync_postings(date(2026, 4, 1), date(2026, 4, 30))
+        first_result = service_without_finance.sync_postings(date(2026, 4, 1), date(2026, 4, 28))
         self.assertEqual(first_result.sales_created, 3)
         self.assertEqual(
             list(SaleRecord.objects.order_by('external_id').values_list('income', flat=True)),
             [Decimal('150.50'), Decimal('150.50'), Decimal('200.00')],
         )
 
-        second_result = self.service.sync_postings(date(2026, 4, 1), date(2026, 4, 30))
+        second_result = self.service.sync_postings(date(2026, 4, 1), date(2026, 4, 28))
 
         self.assertEqual(second_result.sales_created, 0)
         self.assertEqual(second_result.sales_skipped, 3)
@@ -193,6 +229,24 @@ class OzonSyncTests(TestCase):
             list(SaleRecord.objects.order_by('external_id').values_list('income', flat=True)),
             [Decimal('120.50'), Decimal('120.50'), Decimal('150.00')],
         )
+
+    def test_sync_postings_splits_long_periods_for_finance_api(self):
+        Product.objects.create(
+            article='OZON-1',
+            name='РўРѕРІР°СЂ Ozon',
+            quantity=5,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+        )
+
+        client = FakeOzonClient(finance_transactions=[])
+        service = OzonSyncService(client=client)
+        service.sync_postings(date(2026, 4, 1), date(2026, 5, 9))
+
+        self.assertGreater(len(client.finance_transaction_periods), 1)
+        self.assertEqual(client.finance_transaction_periods[0][0], '2026-04-01T00:00:00Z')
+        self.assertEqual(client.finance_transaction_periods[0][1], '2026-04-28T23:59:59.999999Z')
+        self.assertEqual(client.finance_transaction_periods[1][0], '2026-04-29T00:00:00Z')
 
 
 class ProductListTests(TestCase):
@@ -215,6 +269,44 @@ class ProductListTests(TestCase):
         self.assertEqual(len(second_page.context['groups']), 5)
         self.assertEqual(first_page.context['paginator'].num_pages, 2)
         self.assertEqual(second_page.context['page_obj'].number, 2)
+
+    def test_update_cost_price_can_apply_to_sales_and_undo(self):
+        product = Product.objects.create(
+            article='SKU-1',
+            name='РўРѕРІР°СЂ',
+            quantity=1,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+        )
+        sale = SaleRecord.objects.create(
+            product=product,
+            sale_type='free',
+            income=Decimal('200.00'),
+        )
+
+        response = self.client.post(reverse('update_cost_price'), {
+            'product_id': product.id,
+            'cost_price': '150.00',
+            'apply_to_sales': 'true',
+        })
+
+        self.assertEqual(response.status_code, 200)
+        product.refresh_from_db()
+        sale.refresh_from_db()
+        self.assertEqual(product.cost_price, Decimal('150.00'))
+        self.assertEqual(product.purchase_price, Decimal('150.00'))
+        self.assertEqual(product.delivery_cost, Decimal('0.00'))
+        self.assertEqual(sale.profit, Decimal('50.00'))
+
+        undo_response = self.client.post(reverse('undo_cost_price'))
+
+        self.assertEqual(undo_response.status_code, 200)
+        product.refresh_from_db()
+        sale.refresh_from_db()
+        self.assertEqual(product.cost_price, Decimal('120.00'))
+        self.assertEqual(product.purchase_price, Decimal('100.00'))
+        self.assertEqual(product.delivery_cost, Decimal('20.00'))
+        self.assertEqual(sale.profit, Decimal('80.00'))
 
     def test_product_list_filters_groups_and_sets_last_sale_date(self):
         positive_product = Product.objects.create(

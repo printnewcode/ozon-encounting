@@ -8,7 +8,7 @@ import pandas as pd
 from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db import transaction
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import redirect, render
 from django.views.decorators.http import require_POST
 from django.utils import timezone
@@ -131,6 +131,16 @@ def parse_positive_int(value, field_name: str, row_number: int, default: int | N
 def is_header_or_empty_article(value) -> bool:
     article = str(value).strip()
     return not article or article.lower() in {'nan', 'article', 'артикул'}
+
+
+def parse_request_decimal(value, field_name: str) -> Decimal:
+    try:
+        amount = Decimal(str(value).strip().replace(',', '.')).quantize(Decimal('0.01'))
+    except (InvalidOperation, ValueError):
+        raise ValueError(f'Некорректное значение поля «{field_name}».')
+    if amount < 0:
+        raise ValueError(f'Поле «{field_name}» не может быть меньше 0.')
+    return amount
 
 
 def values_differ(left, right) -> bool:
@@ -367,6 +377,7 @@ def product_list(request):
                 'total_profit': Decimal('0'),
                 'has_sales': False,
                 'last_sale_date': None,
+                'product_ids': [],
                 'sort_status': status_order.get(status_key, 99),
             }
         return groups_dict[group_key]
@@ -375,9 +386,12 @@ def product_list(request):
     for product in unsold:
         group = get_group(product.article, product.status, product.name, product.get_status_display())
         remaining_count = max(product.quantity, 1)
+        if product.id not in group['product_ids']:
+            group['product_ids'].append(product.id)
 
         for _ in range(remaining_count):
             group['rows'].append({
+                'product_id': product.id,
                 'article': product.article,
                 'name': product.name,
                 'status_key': product.status,
@@ -394,6 +408,7 @@ def product_list(request):
         group = get_group(sale.article, 'sold', sale.name, 'Продан')
 
         group['rows'].append({
+            'product_id': sale.product_id,
             'article': sale.article,
             'name': sale.name,
             'status_key': 'sold',
@@ -445,6 +460,8 @@ def product_list(request):
         group['header_status_key'] = group['status_key']
         group['header_status_label'] = group['status_label']
         group['header_cost'] = group['rows'][0]['cost_price']
+        group['product_ids_value'] = ','.join(str(product_id) for product_id in group['product_ids'])
+        group['primary_product_id'] = group['product_ids'][0] if group['product_ids'] else ''
         groups.append(group)
 
     groups.sort(
@@ -491,6 +508,88 @@ def product_list(request):
         'active_direction': active_direction,
         'page_query_prefix': f'{page_query}&' if page_query else '',
         'table_headers': table_headers,
+    })
+
+
+@require_POST
+def update_cost_price(request):
+    try:
+        product_id = int(request.POST.get('product_id') or 0)
+        new_cost_price = parse_request_decimal(request.POST.get('cost_price'), 'Себестоимость')
+        apply_to_sales = request.POST.get('apply_to_sales') == 'true'
+    except (TypeError, ValueError) as exc:
+        return JsonResponse({'ok': False, 'error': str(exc)}, status=400)
+
+    with transaction.atomic():
+        try:
+            product = Product.objects.select_for_update().get(id=product_id, status='in_stock')
+        except Product.DoesNotExist:
+            return JsonResponse({'ok': False, 'error': 'Товар в наличии не найден.'}, status=404)
+
+        sale_queryset = SaleRecord.objects.select_for_update().filter(article=product.article)
+        sales_snapshot = list(sale_queryset.values('id', 'profit'))
+
+        request.session['cost_price_undo'] = {
+            'product_id': product.id,
+            'article': product.article,
+            'purchase_price': str(product.purchase_price),
+            'delivery_cost': str(product.delivery_cost),
+            'cost_price': str(product.cost_price),
+            'sales': [
+                {'id': sale['id'], 'profit': str(sale['profit']) if sale['profit'] is not None else None}
+                for sale in sales_snapshot
+            ],
+        }
+
+        product.purchase_price = new_cost_price
+        product.delivery_cost = Decimal('0.00')
+        product.save()
+
+        updated_sales = 0
+        if apply_to_sales:
+            for sale in sale_queryset:
+                sale.profit = sale.income - new_cost_price
+                sale.save(update_fields=['profit'])
+                updated_sales += 1
+
+    return JsonResponse({
+        'ok': True,
+        'article': product.article,
+        'cost_price': str(product.cost_price),
+        'updated_sales': updated_sales,
+    })
+
+
+@require_POST
+def undo_cost_price(request):
+    undo_data = request.session.get('cost_price_undo')
+    if not undo_data:
+        return JsonResponse({'ok': False, 'error': 'Нет изменений для отмены.'}, status=404)
+
+    with transaction.atomic():
+        try:
+            product = Product.objects.select_for_update().get(id=undo_data['product_id'])
+        except Product.DoesNotExist:
+            return JsonResponse({'ok': False, 'error': 'Товар не найден.'}, status=404)
+
+        product.purchase_price = Decimal(undo_data['purchase_price'])
+        product.delivery_cost = Decimal(undo_data['delivery_cost'])
+        product.save()
+
+        restored_sales = 0
+        for sale_data in undo_data.get('sales', []):
+            updated = SaleRecord.objects.filter(id=sale_data['id']).update(
+                profit=Decimal(sale_data['profit']) if sale_data['profit'] is not None else None,
+            )
+            restored_sales += updated
+
+        del request.session['cost_price_undo']
+
+    return JsonResponse({
+        'ok': True,
+        'article': product.article,
+        'cost_price': str(product.cost_price),
+        'restored_sales': restored_sales,
     })
 
 

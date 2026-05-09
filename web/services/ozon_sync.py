@@ -1,6 +1,6 @@
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone as datetime_timezone
+from datetime import date, datetime, time, timedelta, timezone as datetime_timezone
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -38,6 +38,14 @@ BLOCKING_STATUS_MARKERS = (
 def chunked(items: list, size: int):
     for index in range(0, len(items), size):
         yield items[index:index + size]
+
+
+def chunked_date_range(date_from: date, date_to: date, max_days: int = 28):
+    current = date_from
+    while current <= date_to:
+        chunk_to = min(current + timedelta(days=max_days - 1), date_to)
+        yield current, chunk_to
+        current = chunk_to + timedelta(days=1)
 
 
 def parse_decimal(value) -> Decimal:
@@ -136,6 +144,31 @@ def stock_quantity(item: dict) -> int:
     for stock in stocks:
         total += int(stock.get('present') or stock.get('quantity') or 0)
     return total
+
+
+def warehouse_stock_offer_id(item: dict) -> str:
+    return str(
+        item.get('item_code')
+        or item.get('offer_id')
+        or item.get('offer')
+        or ''
+    ).strip()
+
+
+def warehouse_stock_quantity(item: dict) -> int:
+    for field in ('free_to_sell_amount', 'present', 'quantity', 'available_stock_count', 'valid_stock_count'):
+        if item.get(field) not in (None, ''):
+            return int(item.get(field) or 0)
+    return 0
+
+
+def stock_on_warehouses_quantities(items) -> dict[str, int]:
+    quantities = defaultdict(int)
+    for item in items:
+        offer_id = warehouse_stock_offer_id(item)
+        if offer_id:
+            quantities[offer_id] += warehouse_stock_quantity(item)
+    return dict(quantities)
 
 
 def posting_date(posting: dict) -> date:
@@ -300,9 +333,10 @@ def update_product_from_ozon(product: Product, item: dict) -> bool:
 
 
 def is_product_sellable(product: Product, quantity: int) -> bool:
+    visibility = product.ozon_visibility.lower()
     return (
         quantity > 0
-        and product.ozon_visibility == 'VISIBLE'
+        and visibility not in {'invisible', 'hidden'}
         and not any(marker in product.ozon_status.lower() for marker in BLOCKING_STATUS_MARKERS)
     )
 
@@ -352,18 +386,37 @@ class OzonSyncService:
     @transaction.atomic
     def sync_stocks(self) -> OzonSyncResult:
         result = OzonSyncResult()
+        warehouse_quantities = stock_on_warehouses_quantities(self.client.stock_on_warehouses())
+        seen_offer_ids = set()
 
         for item in self.client.product_stocks():
             offer_id = item_offer_id(item)
             if not offer_id:
                 continue
+            seen_offer_ids.add(offer_id)
 
             product, _ = Product.objects.get_or_create(
                 article=offer_id,
                 defaults=product_defaults(item),
             )
-            quantity = stock_quantity(item)
+            quantity = max(stock_quantity(item), warehouse_quantities.get(offer_id, 0))
             update_product_from_ozon(product, item)
+            status = product_status_from_ozon(product, quantity)
+
+            if product.quantity != quantity or product.status != status:
+                product.quantity = quantity
+                product.status = status
+                product.save()
+                result.stocks_updated += 1
+
+        for offer_id, quantity in warehouse_quantities.items():
+            if offer_id in seen_offer_ids:
+                continue
+
+            product, _ = Product.objects.get_or_create(
+                article=offer_id,
+                defaults=product_defaults({'offer_id': offer_id}),
+            )
             status = product_status_from_ozon(product, quantity)
 
             if product.quantity != quantity or product.status != status:
@@ -377,15 +430,17 @@ class OzonSyncService:
     @transaction.atomic
     def sync_postings(self, date_from: date, date_to: date) -> OzonSyncResult:
         result = OzonSyncResult()
-        date_from_value = as_ozon_datetime(date_from)
-        date_to_value = as_ozon_datetime(date_to, end_of_day=True)
-        finance_index = build_finance_index(self.client.finance_transactions(date_from_value, date_to_value))
 
-        for posting in self.client.fbo_postings(date_from_value, date_to_value):
-            self.create_sales_from_posting(posting, 'fbo', result, finance_index)
+        for chunk_from, chunk_to in chunked_date_range(date_from, date_to):
+            date_from_value = as_ozon_datetime(chunk_from)
+            date_to_value = as_ozon_datetime(chunk_to, end_of_day=True)
+            finance_index = build_finance_index(self.client.finance_transactions(date_from_value, date_to_value))
 
-        for posting in self.client.fbs_postings(date_from_value, date_to_value):
-            self.create_sales_from_posting(posting, 'fbs', result, finance_index)
+            for posting in self.client.fbo_postings(date_from_value, date_to_value):
+                self.create_sales_from_posting(posting, 'fbo', result, finance_index)
+
+            for posting in self.client.fbs_postings(date_from_value, date_to_value):
+                self.create_sales_from_posting(posting, 'fbs', result, finance_index)
 
         return result
 
