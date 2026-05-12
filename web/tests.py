@@ -70,12 +70,16 @@ class FakeOzonClient:
         if self._finance_transactions is None:
             return iter([
                 {
+                    'operation_id': 10001,
+                    'operation_date': '2026-04-22T12:00:00Z',
                     'posting': {'posting_number': 'FBO-1'},
                     'amount': '241.00',
                     'items': [{'sku': 202, 'accruals_for_sale': '301.00'}],
-                    'services': [{'name': 'delivery', 'price': '-30.00'}],
+                    'services': [{'name': 'MarketplaceServiceItemDirectFlowLogistic', 'price': '-30.00'}],
                 },
                 {
+                    'operation_id': 10002,
+                    'operation_date': '2026-04-23T12:00:00Z',
                     'posting': {'posting_number': 'FBS-1'},
                     'amount': '150.00',
                     'items': [{'sku': 202, 'accruals_for_sale': '200.00'}],
@@ -193,11 +197,24 @@ class OzonSyncTests(TestCase):
         self.assertEqual(SaleRecord.objects.filter(posting_number='FBS-1').count(), 1)
         self.assertEqual(SaleRecord.objects.filter(sale_date=date(2026, 4, 20)).count(), 2)
         self.assertEqual(SaleRecord.objects.filter(sale_date=date(2026, 4, 21)).count(), 1)
+        self.assertEqual(SaleRecord.objects.filter(accrual_id='10001', accrual_date=date(2026, 4, 22)).count(), 2)
+        self.assertEqual(SaleRecord.objects.filter(accrual_id='10002', accrual_date=date(2026, 4, 23)).count(), 1)
         self.assertEqual(SaleRecord.objects.first().product, product)
         self.assertEqual(
             list(SaleRecord.objects.order_by('external_id').values_list('income', flat=True)),
             [Decimal('120.50'), Decimal('120.50'), Decimal('150.00')],
         )
+        self.assertEqual(
+            list(SaleRecord.objects.order_by('external_id').values_list('accrual_id', flat=True)),
+            ['10001', '10001', '10002'],
+        )
+        first_sale = SaleRecord.objects.order_by('external_id').first()
+        self.assertEqual(first_sale.accrual_details['gross_price'], '150.50')
+        self.assertEqual(first_sale.accrual_details['net_income'], '120.50')
+        self.assertEqual(first_sale.accrual_details['deductions_total'], '30.00')
+        self.assertEqual(first_sale.accrual_details['services'][0]['name'], 'Логистика до покупателя')
+        self.assertEqual(first_sale.accrual_details['services'][0]['code'], 'MarketplaceServiceItemDirectFlowLogistic')
+        self.assertEqual(first_sale.accrual_details['services'][0]['price'], '-30.00')
         self.assertEqual(
             list(SaleRecord.objects.order_by('external_id').values_list('profit', flat=True)),
             [Decimal('0.50'), Decimal('0.50'), Decimal('30.00')],
@@ -374,6 +391,83 @@ class ProductListTests(TestCase):
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0]['article'], 'SKU-SALE')
 
+    def test_product_list_shows_in_stock_quantity_as_pieces_without_fake_row_count(self):
+        Product.objects.create(
+            article='SKU-ZERO',
+            name='Zero stock',
+            quantity=0,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='in_stock',
+        )
+
+        response = self.client.get(reverse('product_list'), {'article': 'SKU-ZERO'})
+
+        groups = response.context['groups']
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['count'], 0)
+        self.assertContains(response, '0 штук')
+        self.assertNotContains(response, '0 зап.')
+
+    def test_product_list_shows_accrual_fields_for_sold_rows(self):
+        product = Product.objects.create(
+            article='SKU-SOLD',
+            name='Sold',
+            quantity=0,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='sold',
+        )
+        SaleRecord.objects.create(
+            product=product,
+            sale_type='ozon',
+            income=Decimal('200.00'),
+            sale_date=date(2026, 4, 10),
+            accrual_date=date(2026, 4, 12),
+            accrual_id='987654',
+            accrual_details={
+                'gross_price': '250.00',
+                'net_income': '200.00',
+                'deductions_total': '50.00',
+                'services': [{'name': 'Эквайринг', 'price': '-10.00'}],
+                'items': [{'sale_commission': '-40.00'}],
+            },
+        )
+
+        response = self.client.get(reverse('product_list'), {'article': 'SKU-SOLD'})
+
+        self.assertContains(response, 'Дата начисления')
+        self.assertContains(response, 'ID начисления')
+        self.assertContains(response, '12.04.2026')
+        self.assertContains(response, '987654')
+        self.assertContains(response, 'Показать списания')
+        self.assertContains(response, 'Эквайринг')
+
+    def test_product_list_can_search_by_article(self):
+        Product.objects.create(
+            article='JGET100001PERKLIC',
+            name='Switch',
+            quantity=1,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='in_sale',
+        )
+        Product.objects.create(
+            article='SKU-STOCK',
+            name='Stock',
+            quantity=1,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='in_stock',
+        )
+
+        response = self.client.get(reverse('product_list'), {'article': 'perklic'})
+
+        groups = response.context['groups']
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['article'], 'JGET100001PERKLIC')
+        self.assertEqual(response.context['active_article_query'], 'perklic')
+
     def test_product_list_sorts_all_groups_before_pagination(self):
         for index in range(30):
             Product.objects.create(
@@ -490,6 +584,22 @@ class SupplyUploadTests(TestCase):
         product = Product.objects.get(article='SKU-2')
         self.assertEqual(product.quantity, 4)
         self.assertEqual(product.cost_price, Decimal('60.00'))
+
+    def test_supply_upload_supports_headerless_file(self):
+        upload = SimpleUploadedFile(
+            'supply.csv',
+            'JGET10022AA;Батарейный блок 2 АА BH325A. J-get;11,38461538;3,415384615;14,8;1880\n'.encode('utf-8'),
+            content_type='text/csv',
+        )
+
+        response = self.client.post(reverse('upload_supply'), {'file': upload})
+
+        self.assertRedirects(response, reverse('product_list'))
+        product = Product.objects.get(article='JGET10022AA')
+        self.assertEqual(product.quantity, 1880)
+        self.assertEqual(product.purchase_price, Decimal('11.38'))
+        self.assertEqual(product.delivery_cost, Decimal('3.42'))
+        self.assertEqual(product.cost_price, Decimal('14.80'))
 
 
 class ExportTests(TestCase):

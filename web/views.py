@@ -1,4 +1,5 @@
 import io
+import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -28,7 +29,7 @@ CSV_ENCODINGS = ('utf-8-sig', 'utf-8', 'cp1251')
 MAX_VISIBLE_WARNINGS = 5
 PRODUCT_GROUPS_PER_PAGE = 25
 PRODUCT_FILTERS = ('sold', 'in_stock', 'in_sale', 'profit_positive', 'profit_negative')
-PRODUCT_SORTS = ('article', 'name', 'status', 'cost', 'income', 'profit', 'date')
+PRODUCT_SORTS = ('article', 'name', 'status', 'cost', 'income', 'profit', 'date', 'accrual_date', 'accrual_id')
 
 
 def selected_product_filters(request):
@@ -183,6 +184,11 @@ def parse_file(file) -> pd.DataFrame:
             raise ValueError("Не удалось определить кодировку файла. Используйте UTF-8 или CP1251.")
     else:
         df = pd.read_excel(file)
+
+    if df.shape[1] and not is_header_or_empty_article(df.columns[0]):
+        first_row = pd.DataFrame([list(df.columns)])
+        df = pd.concat([first_row, df], ignore_index=True)
+        df.columns = range(df.shape[1])
 
     df.columns = df.columns.astype(str).str.strip()
     return df.fillna('')
@@ -351,6 +357,7 @@ def upload_sales(request):
 def product_list(request):
     groups_dict = {}
     active_filters = selected_product_filters(request)
+    active_article_query = request.GET.get('article', '').strip()
     active_sort = request.GET.get('sort', 'status')
     if active_sort not in PRODUCT_SORTS:
         active_sort = 'status'
@@ -385,10 +392,28 @@ def product_list(request):
     unsold = Product.objects.filter(status__in=['in_stock', 'in_sale']).order_by('article', 'created_at')
     for product in unsold:
         group = get_group(product.article, product.status, product.name, product.get_status_display())
-        remaining_count = max(product.quantity, 1)
         if product.id not in group['product_ids']:
             group['product_ids'].append(product.id)
 
+        if product.status == 'in_stock':
+            group['rows'].append({
+                'product_id': product.id,
+                'article': product.article,
+                'name': product.name,
+                'status_key': product.status,
+                'status_label': product.get_status_display(),
+                'cost_price': product.cost_price,
+                'income': None,
+                'profit': None,
+                'sale_date': None,
+                'accrual_date': None,
+                'accrual_id': '',
+                'accrual_details_json': '',
+            })
+            group['count'] += max(product.quantity, 0)
+            continue
+
+        remaining_count = max(product.quantity, 1)
         for _ in range(remaining_count):
             group['rows'].append({
                 'product_id': product.id,
@@ -400,6 +425,9 @@ def product_list(request):
                 'income': None,
                 'profit': None,
                 'sale_date': None,
+                'accrual_date': None,
+                'accrual_id': '',
+                'accrual_details_json': '',
             })
             group['count'] += 1
 
@@ -417,6 +445,9 @@ def product_list(request):
             'income': sale.income,
             'profit': sale.profit,
             'sale_date': sale.sale_date,
+            'accrual_date': sale.accrual_date,
+            'accrual_id': sale.accrual_id or '',
+            'accrual_details_json': json.dumps(sale.accrual_details, ensure_ascii=False) if sale.accrual_details else '',
         })
         group['count'] += 1
         if sale.income:
@@ -429,6 +460,8 @@ def product_list(request):
 
     groups = []
     def is_group_visible(group):
+        if active_article_query and active_article_query.lower() not in str(group['article']).lower():
+            return False
         if group['status_key'] not in active_filters:
             return False
         if group['status_key'] == 'sold':
@@ -452,6 +485,12 @@ def product_list(request):
             return group['total_profit']
         if active_sort == 'date':
             return group['last_sale_date'] or date.min
+        if active_sort == 'accrual_date':
+            dates = [row['accrual_date'] for row in group['rows'] if row.get('accrual_date')]
+            return max(dates) if dates else date.min
+        if active_sort == 'accrual_id':
+            ids = [str(row['accrual_id']).lower() for row in group['rows'] if row.get('accrual_id')]
+            return ids[0] if ids else ''
         return group['sort_status']
 
     for group in groups_dict.values():
@@ -481,6 +520,8 @@ def product_list(request):
         ('income', 4, 'num', 'Доход'),
         ('profit', 5, 'num', 'Прибыль'),
         ('date', 6, 'date', 'Дата продажи'),
+        ('accrual_date', 7, 'date', 'Дата начисления'),
+        ('accrual_id', 8, 'str', 'ID начисления'),
     ]
     table_headers = [
         {
@@ -504,6 +545,7 @@ def product_list(request):
         'paginator': paginator,
         'total_groups': paginator.count,
         'active_filters': active_filters,
+        'active_article_query': active_article_query,
         'active_sort': active_sort,
         'active_direction': active_direction,
         'page_query_prefix': f'{page_query}&' if page_query else '',

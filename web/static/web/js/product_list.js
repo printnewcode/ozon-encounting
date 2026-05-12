@@ -1,12 +1,19 @@
 document.addEventListener('DOMContentLoaded', () => {
+    const CHILDREN_PAGE_SIZE = 15;
+
     // --- Toggle Expansion ---
     document.querySelectorAll('.group-header').forEach(header => {
+        if (header.classList.contains('no-expand')) return;
+
         header.setAttribute('tabindex', '0');
         header.setAttribute('role', 'button');
         header.setAttribute('aria-expanded', 'false');
+        header._visibleChildren = CHILDREN_PAGE_SIZE;
 
         const setRowsExpanded = (isExpanded) => {
             let next = header.nextElementSibling;
+            let visibleRegularRows = 0;
+            let hiddenRegularRows = 0;
             while (next && next.classList.contains('child-row')) {
                 const row = next;
 
@@ -16,9 +23,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
 
                 if (isExpanded) {
-                    row.classList.remove('closing');
-                    row.classList.add('show');
+                    if (row.classList.contains('load-more-row')) {
+                        row.classList.toggle('show', hiddenRegularRows > 0);
+                        row.classList.remove('closing');
+                    } else if (visibleRegularRows < header._visibleChildren) {
+                        row.classList.remove('closing');
+                        row.classList.add('show');
+                        visibleRegularRows += 1;
+                    } else {
+                        row.classList.remove('show', 'closing');
+                        hiddenRegularRows += 1;
+                    }
                 } else {
+                    header._visibleChildren = CHILDREN_PAGE_SIZE;
                     row.classList.add('closing');
                     row._collapseTimer = setTimeout(() => {
                         row.classList.remove('show', 'closing');
@@ -50,6 +67,38 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    document.querySelectorAll('.load-more-children').forEach(button => {
+        button.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const row = button.closest('.load-more-row');
+            let header = row?.previousElementSibling;
+            while (header && !header.classList.contains('group-header')) {
+                header = header.previousElementSibling;
+            }
+            if (!header) return;
+
+            header._visibleChildren += CHILDREN_PAGE_SIZE;
+            let next = header.nextElementSibling;
+            let visibleRegularRows = 0;
+            let hiddenRegularRows = 0;
+            while (next && next.classList.contains('child-row')) {
+                const child = next;
+                if (child.classList.contains('load-more-row')) {
+                    child.classList.toggle('show', hiddenRegularRows > 0);
+                    child.classList.remove('closing');
+                } else if (visibleRegularRows < header._visibleChildren) {
+                    child.classList.remove('closing');
+                    child.classList.add('show');
+                    visibleRegularRows += 1;
+                } else {
+                    child.classList.remove('show', 'closing');
+                    hiddenRegularRows += 1;
+                }
+                next = child.nextElementSibling;
+            }
+        });
+    });
+
     const modal = document.getElementById('costModal');
     const form = document.getElementById('costForm');
     const productInput = document.getElementById('costProductId');
@@ -58,6 +107,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const productLabel = document.getElementById('costModalProduct');
     const toast = document.getElementById('costToast');
     const undoButton = toast?.querySelector('.cost-toast-undo');
+    const accrualModal = document.getElementById('accrualModal');
+    const accrualGrossPrice = document.getElementById('accrualGrossPrice');
+    const accrualDeductions = document.getElementById('accrualDeductions');
+    const accrualNetIncome = document.getElementById('accrualNetIncome');
+    const accrualServices = document.getElementById('accrualServices');
+    const accrualItems = document.getElementById('accrualItems');
     let toastTimer = null;
 
     const csrfInput = form?.querySelector('[name="csrfmiddlewaretoken"]');
@@ -67,6 +122,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!modal) return;
         modal.classList.remove('show');
         modal.setAttribute('aria-hidden', 'true');
+    };
+
+    const closeAccrualModal = () => {
+        if (!accrualModal) return;
+        accrualModal.classList.remove('show');
+        accrualModal.setAttribute('aria-hidden', 'true');
     };
 
     const openModal = (button) => {
@@ -123,10 +184,141 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 5000);
     };
 
+    const SERVICE_LABELS = {
+        MarketplaceServiceItemDirectFlowLogistic: 'Логистика до покупателя',
+        MarketplaceServiceItemDirectFlowTrans: 'Магистральная доставка',
+        MarketplaceServiceItemDirectFlowDelivToCustomer: 'Доставка покупателю',
+        MarketplaceServiceItemDirectFlowDeliveryToCustomer: 'Доставка покупателю',
+        MarketplaceServiceItemDeliveryToHandoverPlaceOzon: 'Доставка до места передачи OZON',
+        MarketplaceServiceItemRedistributionLastMileCourier: 'Последняя миля, курьер',
+        MarketplaceRedistributionOfAcquiringOperation: 'Эквайринг',
+        MarketplaceServiceItemStorage: 'Хранение',
+        MarketplaceServiceItemFulfillment: 'Сборка и обработка отправления',
+        MarketplaceServiceItemPickup: 'Забор отправления',
+        MarketplaceServiceItemReturnFlowLogistic: 'Логистика возврата',
+        MarketplaceServiceItemReturnNotDelivToCustomer: 'Возврат недоставленного товара',
+    };
+
+    const OPERATION_LABELS = {
+        OperationAgentDeliveredToCustomer: 'Доставка покупателю',
+        OperationAgentStornoDeliveredToCustomer: 'Отмена доставки покупателю',
+        OperationMarketplaceServiceStorage: 'Хранение',
+        ClientReturnAgentOperation: 'Возврат покупателя',
+    };
+
+    const translatedLabel = (value, labels) => {
+        const text = String(value || '').trim();
+        return labels[text] || text;
+    };
+
+    const formatMoney = (value) => {
+        const number = Number(String(value || '0').replace(',', '.'));
+        if (!Number.isFinite(number)) return '0.00';
+        return number.toFixed(2);
+    };
+
+    const hasMoneyValue = (value) => {
+        if (value === null || value === undefined || value === '') return false;
+        const number = Number(String(value).replace(',', '.'));
+        return Number.isFinite(number) && Math.abs(number) > 0;
+    };
+
+    const renderList = (container, rows, emptyText) => {
+        if (!container) return;
+        container.innerHTML = '';
+        if (!rows || rows.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'accrual-empty';
+            empty.textContent = emptyText;
+            container.appendChild(empty);
+            return;
+        }
+        rows.forEach(row => {
+            const item = document.createElement('div');
+            item.className = 'accrual-list-row';
+
+            const label = document.createElement('span');
+            label.textContent = row.label;
+            const value = document.createElement('strong');
+            value.textContent = row.value;
+
+            item.append(label, value);
+            container.appendChild(item);
+        });
+    };
+
+    const openAccrualModal = (button) => {
+        if (!accrualModal) return;
+        let details = {};
+        try {
+            details = JSON.parse(button.dataset.details || '{}');
+        } catch (_) {
+            details = {};
+        }
+
+        if (accrualGrossPrice) accrualGrossPrice.textContent = formatMoney(details.gross_price);
+        if (accrualDeductions) accrualDeductions.textContent = formatMoney(details.deductions_total);
+        if (accrualNetIncome) accrualNetIncome.textContent = formatMoney(details.net_income);
+
+        const serviceRows = (details.services || []).filter(service => hasMoneyValue(service.price)).map(service => ({
+            label: translatedLabel(service.name || service.code, SERVICE_LABELS) || 'Списание',
+            value: formatMoney(service.price),
+        }));
+        const serviceTotal = (details.services || []).reduce((total, service) => {
+            const number = Number(String(service.price || '0').replace(',', '.'));
+            return Number.isFinite(number) && number < 0 ? total + Math.abs(number) : total;
+        }, 0);
+        const deductionsTotal = Number(String(details.deductions_total || '0').replace(',', '.'));
+        const remainder = Number.isFinite(deductionsTotal) ? deductionsTotal - serviceTotal : 0;
+        if (remainder > 0.004) {
+            serviceRows.push({
+                label: 'Разница без детализации OZON',
+                value: formatMoney(-remainder),
+            });
+        }
+
+        renderList(
+            accrualServices,
+            serviceRows,
+            'Списания не переданы в операции.'
+        );
+
+        const itemRows = [];
+        if (details.operation_name || details.operation_type) {
+            const operationLabel = translatedLabel(details.operation_name || details.operation_type, OPERATION_LABELS);
+            itemRows.push({
+                label: '',
+                value: operationLabel,
+            });
+        }
+        (details.items || []).forEach(item => {
+            if (hasMoneyValue(item.accruals_for_sale)) {
+                itemRows.push({ label: 'Начислено за продажу', value: formatMoney(item.accruals_for_sale) });
+            }
+            if (hasMoneyValue(item.sale_commission)) {
+                itemRows.push({ label: 'Комиссия с продажи', value: formatMoney(item.sale_commission) });
+            }
+            if (hasMoneyValue(item.payout)) {
+                itemRows.push({ label: 'Выплата по товару', value: formatMoney(item.payout) });
+            }
+        });
+        renderList(accrualItems, itemRows, 'Дополнительных данных нет.');
+
+        accrualModal.classList.add('show');
+        accrualModal.setAttribute('aria-hidden', 'false');
+    };
+
     document.querySelectorAll('.cost-edit-button').forEach(button => {
         button.addEventListener('click', (e) => {
             e.stopPropagation();
             openModal(button);
+        });
+    });
+
+    document.querySelectorAll('.accrual-info-button').forEach(button => {
+        button.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openAccrualModal(button);
         });
     });
 
@@ -136,9 +328,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    accrualModal?.addEventListener('click', (e) => {
+        if (e.target === accrualModal || e.target.closest('.accrual-modal-close')) {
+            closeAccrualModal();
+        }
+    });
+
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && modal?.classList.contains('show')) {
             closeModal();
+        }
+        if (e.key === 'Escape' && accrualModal?.classList.contains('show')) {
+            closeAccrualModal();
         }
     });
 

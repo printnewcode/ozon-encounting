@@ -34,6 +34,43 @@ BLOCKING_STATUS_MARKERS = (
     'error',
 )
 
+OZON_SERVICE_LABELS = {
+    'MarketplaceServiceItemDirectFlowLogistic': 'Логистика до покупателя',
+    'MarketplaceServiceItemDirectFlowTrans': 'Магистральная доставка',
+    'MarketplaceServiceItemDirectFlowDelivToCustomer': 'Доставка покупателю',
+    'MarketplaceServiceItemDirectFlowDeliveryToCustomer': 'Доставка покупателю',
+    'MarketplaceServiceItemDeliveryToHandoverPlaceOzon': 'Доставка до места передачи OZON',
+    'MarketplaceServiceItemDropoffFF': 'Обработка отправления',
+    'MarketplaceServiceItemDropoffPVZ': 'Прием в пункте приема',
+    'MarketplaceServiceItemDropoffSC': 'Прием в сортировочном центре',
+    'MarketplaceServiceItemFulfillment': 'Сборка и обработка отправления',
+    'MarketplaceServiceItemPickup': 'Забор отправления',
+    'MarketplaceServiceItemReturnAfterDelivToCustomer': 'Возврат после доставки',
+    'MarketplaceServiceItemReturnFlowLogistic': 'Логистика возврата',
+    'MarketplaceServiceItemReturnFlowTrans': 'Магистраль возврата',
+    'MarketplaceServiceItemReturnNotDelivToCustomer': 'Возврат недоставленного товара',
+    'MarketplaceServiceItemRedistributionLastMileCourier': 'Последняя миля, курьер',
+    'MarketplaceRedistributionOfAcquiringOperation': 'Эквайринг',
+    'MarketplaceServiceItemRedistributionReturnsPVZ': 'Обработка возврата в ПВЗ',
+    'MarketplaceServiceItemRedistributionReturnsCourier': 'Обработка возврата курьером',
+    'MarketplaceServiceItemRedistributionReturnsSC': 'Обработка возврата в сортировочном центре',
+    'MarketplaceServiceItemRedistributionLastMilePVZ': 'Последняя миля, ПВЗ',
+    'MarketplaceServiceItemRedistributionLastMileSC': 'Последняя миля, сортировочный центр',
+    'MarketplaceServiceItemStorage': 'Хранение',
+    'MarketplaceServiceItemUtilization': 'Утилизация',
+    'MarketplaceServiceItemServiceFee': 'Комиссия OZON',
+}
+
+OZON_OPERATION_LABELS = {
+    'OperationAgentDeliveredToCustomer': 'Доставка покупателю',
+    'OperationAgentStornoDeliveredToCustomer': 'Отмена доставки покупателю',
+    'OperationMarketplaceServiceStorage': 'Хранение',
+    'OperationMarketplaceServicePremiumCashback': 'Premium-кэшбэк',
+    'ClientReturnAgentOperation': 'Возврат покупателя',
+    'OperationMarketplaceCrossDockServiceWriteOff': 'Кросс-докинг',
+    'MarketplaceMarketingActionCostOperation': 'Маркетинговая акция',
+}
+
 
 def chunked(items: list, size: int):
     for index in range(0, len(items), size):
@@ -222,29 +259,120 @@ def operation_item_net_amount(item: dict) -> Decimal:
 
 
 @dataclass
-class OzonFinanceIndex:
-    item_amounts: dict
-    posting_amounts: dict
+class OzonFinanceEntry:
+    amount: Decimal
+    accrual_id: str = ''
+    accrual_date: date | None = None
+    operation_type: str = ''
+    operation_name: str = ''
+    services: list | None = None
+    items: list | None = None
 
-    def amount_for_item(self, posting_number: str, item: dict, posting_products_count: int) -> Decimal | None:
+
+@dataclass
+class OzonFinanceIndex:
+    item_entries: dict
+    posting_entries: dict
+
+    def entry_for_item(self, posting_number: str, item: dict, posting_products_count: int) -> OzonFinanceEntry | None:
         posting_number = str(posting_number or '').strip()
         if not posting_number:
             return None
 
         for key in item_key_values(item):
-            amount = self.item_amounts.get((posting_number, key))
-            if amount is not None:
-                return amount
+            entry = self.item_entries.get((posting_number, key))
+            if entry is not None:
+                return entry
 
         if posting_products_count == 1:
-            return self.posting_amounts.get(posting_number)
+            return self.posting_entries.get(posting_number)
 
         return None
 
 
+def decimal_as_string(value) -> str:
+    return str(parse_decimal(value))
+
+
+def ozon_label(value: str, labels: dict[str, str]) -> str:
+    value = str(value or '').strip()
+    return labels.get(value, value)
+
+
+def finance_services(operation: dict) -> list[dict]:
+    services = []
+    for service in operation.get('services') or []:
+        raw_name = str(service.get('name') or service.get('service_name') or service.get('type') or '').strip()
+        services.append({
+            **service,
+            'code': raw_name,
+            'name': ozon_label(raw_name, OZON_SERVICE_LABELS) or 'Списание',
+            'price': decimal_as_string(service.get('price')),
+        })
+    return services
+
+
+def finance_items(items: list[dict]) -> list[dict]:
+    normalized = []
+    for item in items:
+        raw_operation_type = str(item.get('operation_type') or '').strip()
+        normalized.append({
+            **item,
+            'sku': str(item.get('sku') or '').strip(),
+            'offer_id': item_offer_id(item),
+            'name': str(item.get('name') or '').strip(),
+            'amount': decimal_as_string(item.get('amount')),
+            'payout': decimal_as_string(item.get('payout')),
+            'accruals_for_sale': decimal_as_string(item.get('accruals_for_sale')),
+            'sale_commission': decimal_as_string(item.get('sale_commission')),
+            'operation_type': raw_operation_type,
+            'operation_type_name': ozon_label(raw_operation_type, OZON_OPERATION_LABELS),
+        })
+    return normalized
+
+
+def add_finance_entry(
+    entries: dict,
+    key,
+    amount: Decimal,
+    operation: dict,
+    services: list[dict],
+    items: list[dict],
+) -> None:
+    accrual_id = str(operation.get('operation_id') or '').strip()
+    accrual_date = parse_ozon_date(operation.get('operation_date')) if operation.get('operation_date') else None
+    current = entries.get(key)
+    if current is None:
+        entries[key] = OzonFinanceEntry(
+            amount=amount,
+            accrual_id=accrual_id,
+            accrual_date=accrual_date,
+            operation_type=str(operation.get('operation_type') or '').strip(),
+            operation_name=(
+                str(operation.get('operation_type_name') or operation.get('operation_name') or '').strip()
+                or ozon_label(str(operation.get('operation_type') or '').strip(), OZON_OPERATION_LABELS)
+            ),
+            services=list(services),
+            items=list(items),
+        )
+        return
+
+    current.amount += amount
+    if not current.accrual_id and accrual_id:
+        current.accrual_id = accrual_id
+    if current.accrual_date is None and accrual_date is not None:
+        current.accrual_date = accrual_date
+    if not current.operation_type and operation.get('operation_type'):
+        current.operation_type = str(operation.get('operation_type')).strip()
+    if not current.operation_name and (operation.get('operation_type_name') or operation.get('operation_name')):
+        current.operation_name = str(operation.get('operation_type_name') or operation.get('operation_name')).strip()
+    current.services = (current.services or []) + list(services)
+    current.items = (current.items or []) + list(items)
+
+
 def build_finance_index(operations) -> OzonFinanceIndex:
-    item_amounts = defaultdict(Decimal)
-    posting_amounts = defaultdict(Decimal)
+    item_entries = {}
+    posting_entries = {}
 
     for operation in operations:
         posting_number = operation_posting_number(operation)
@@ -252,6 +380,8 @@ def build_finance_index(operations) -> OzonFinanceIndex:
         if not posting_number or not items:
             continue
 
+        services = finance_services(operation)
+        normalized_items = finance_items(items)
         operation_amount = parse_decimal(operation.get('amount'))
         if operation_amount == Decimal('0.00'):
             operation_amount = sum((operation_item_net_amount(item) for item in items), Decimal('0.00'))
@@ -278,10 +408,10 @@ def build_finance_index(operations) -> OzonFinanceIndex:
                 allocated += item_amount
 
             for key in keys:
-                item_amounts[(posting_number, key)] += item_amount
-            posting_amounts[posting_number] += item_amount
+                add_finance_entry(item_entries, (posting_number, key), item_amount, operation, services, normalized_items)
+            add_finance_entry(posting_entries, posting_number, item_amount, operation, services, normalized_items)
 
-    return OzonFinanceIndex(dict(item_amounts), dict(posting_amounts))
+    return OzonFinanceIndex(item_entries, posting_entries)
 
 
 def posting_product_net_income(
@@ -290,11 +420,32 @@ def posting_product_net_income(
     quantity: int,
     finance_index: OzonFinanceIndex,
     posting_products_count: int,
-) -> Decimal:
-    total = finance_index.amount_for_item(posting_number, product, posting_products_count)
-    if total is not None and quantity > 0:
-        return (total / quantity).quantize(Decimal('0.01'))
-    return posting_product_price(product)
+) -> tuple[Decimal, OzonFinanceEntry | None]:
+    entry = finance_index.entry_for_item(posting_number, product, posting_products_count)
+    if entry is not None and quantity > 0:
+        return (entry.amount / quantity).quantize(Decimal('0.01')), entry
+    return posting_product_price(product), None
+
+
+def sale_accrual_details(product: dict, income: Decimal, finance_entry: OzonFinanceEntry | None) -> dict:
+    gross_price = posting_product_price(product)
+    details = {
+        'gross_price': str(gross_price),
+        'net_income': str(income),
+        'deductions_total': str((gross_price - income).quantize(Decimal('0.01'))),
+        'services': [],
+        'items': [],
+    }
+    if finance_entry is None:
+        return details
+
+    details.update({
+        'operation_type': finance_entry.operation_type,
+        'operation_name': finance_entry.operation_name,
+        'services': finance_entry.services or [],
+        'items': finance_entry.items or [],
+    })
+    return details
 
 
 def product_defaults(item: dict) -> dict:
@@ -462,7 +613,14 @@ class OzonSyncService:
                 continue
 
             quantity = int(item.get('quantity') or 1)
-            income = posting_product_net_income(item, posting_number, quantity, finance_index, posting_products_count)
+            income, finance_entry = posting_product_net_income(
+                item,
+                posting_number,
+                quantity,
+                finance_index,
+                posting_products_count,
+            )
+            accrual_details = sale_accrual_details(item, income, finance_entry)
             product, _ = Product.objects.get_or_create(
                 article=offer_id,
                 defaults=product_defaults(item),
@@ -472,8 +630,18 @@ class OzonSyncService:
                 external_id = f'ozon:{schema}:{posting_number}:{item_index}:{unit_index}'
                 existing_sale = SaleRecord.objects.filter(external_id=external_id).first()
                 if existing_sale:
-                    if existing_sale.income != income:
+                    accrual_id = finance_entry.accrual_id if finance_entry else None
+                    accrual_date = finance_entry.accrual_date if finance_entry else None
+                    if (
+                        existing_sale.income != income
+                        or existing_sale.accrual_id != accrual_id
+                        or existing_sale.accrual_date != accrual_date
+                        or existing_sale.accrual_details != accrual_details
+                    ):
                         existing_sale.income = income
+                        existing_sale.accrual_id = accrual_id
+                        existing_sale.accrual_date = accrual_date
+                        existing_sale.accrual_details = accrual_details
                         existing_sale.save()
                         result.sales_updated += 1
                     result.sales_skipped += 1
@@ -484,6 +652,9 @@ class OzonSyncService:
                     sale_type='ozon',
                     income=income,
                     sale_date=sale_date,
+                    accrual_date=finance_entry.accrual_date if finance_entry else None,
+                    accrual_id=finance_entry.accrual_id if finance_entry else None,
+                    accrual_details=accrual_details,
                     external_id=external_id,
                     posting_number=posting_number,
                 )

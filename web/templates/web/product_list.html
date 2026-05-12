@@ -31,6 +31,10 @@
     <input type="hidden" name="filters_applied" value="1">
     <input type="hidden" name="sort" value="{{ active_sort }}">
     <input type="hidden" name="direction" value="{{ active_direction }}">
+    <label class="article-search">
+        <span>Артикул</span>
+        <input type="search" name="article" value="{{ active_article_query }}" placeholder="Поиск по артикулу">
+    </label>
     <details class="filter-menu">
         <summary class="btn-secondary-saas">Фильтр</summary>
         <div class="filter-panel">
@@ -60,15 +64,17 @@
         </thead>
         <tbody id="productsBody">
             {% for group in groups %}
-            <tr class="group-header row-status-{{ group.header_status_key }}{% if group.header_status_key == 'sold' %}{% if group.total_profit < 0 %} row-profit-negative{% else %} row-profit-positive{% endif %}{% endif %}" data-article="{{ group.article }}">
+            <tr class="group-header{% if group.header_status_key == 'in_stock' %} no-expand{% endif %} row-status-{{ group.header_status_key }}{% if group.header_status_key == 'sold' %}{% if group.total_profit < 0 %} row-profit-negative{% else %} row-profit-positive{% endif %}{% endif %}" data-article="{{ group.article }}">
                 <td data-sort="{{ group.article }}" title="{{ group.article }}">
+                    {% if group.header_status_key != 'in_stock' %}
                     <span class="expand-icon" aria-hidden="true"></span>
+                    {% endif %}
                     <span class="cell-article text-clip">{{ group.article }}</span>
                 </td>
                 <td data-sort="{{ group.name }}" title="{{ group.name }}">
                     <div class="group-name-layout">
                         <span class="cell-name text-clip">{{ group.name }}</span>
-                        <span class="count-badge">{{ group.count }} зап.</span>
+                        <span class="count-badge">{% if group.header_status_key == 'in_stock' %}{{ group.count }} штук{% else %}{{ group.count }} зап.{% endif %}</span>
                     </div>
                 </td>
                 <td data-sort="{{ group.header_status_label }}">
@@ -109,9 +115,12 @@
                 <td data-sort="{% if group.last_sale_date %}{{ group.last_sale_date|date:'Y-m-d' }}{% else %}0{% endif %}">
                     {% if group.last_sale_date %}{{ group.last_sale_date|date:"d.m.Y" }}{% endif %}
                 </td>
+                <td data-sort="0"></td>
+                <td data-sort=""></td>
             </tr>
+            {% if group.header_status_key != 'in_stock' %}
             {% for row in group.rows %}
-            <tr class="child-row row-status-{{ row.status_key }}{% if row.status_key == 'sold' %}{% if row.profit < 0 %} row-profit-negative{% else %} row-profit-positive{% endif %}{% endif %}{% if forloop.counter|divisibleby:2 %} child-row-alt{% endif %}">
+            <tr class="child-row row-status-{{ row.status_key }}{% if row.status_key == 'sold' %}{% if row.profit < 0 %} row-profit-negative{% else %} row-profit-positive{% endif %}{% endif %}{% if forloop.counter|divisibleby:2 %} child-row-alt{% endif %}" data-child-index="{{ forloop.counter0 }}">
                 <td data-sort="{{ row.article }}" title="{{ row.article }}">
                     <div class="child-cell-content">
                         <span class="child-spacer" aria-hidden="true"></span>
@@ -149,8 +158,19 @@
                     </div>
                 </td>
                 <td data-sort="{% if row.income is not None %}{{ row.income }}{% else %}-1{% endif %}">
-                    <div class="child-cell-content">
-                        {% if row.income is not None %}{{ row.income }}{% endif %}
+                    <div class="child-cell-content accrual-id-cell">
+                        {% if row.income is not None %}
+                            <span>{{ row.income }}</span>
+                            {% if row.status_key == 'sold' and row.accrual_details_json %}
+                            <button
+                                type="button"
+                                class="accrual-info-button"
+                                title="Показать списания"
+                                aria-label="Показать списания"
+                                data-details="{{ row.accrual_details_json|escape }}"
+                            >i</button>
+                            {% endif %}
+                        {% endif %}
                     </div>
                 </td>
                 <td data-sort="{% if row.profit is not None %}{{ row.profit }}{% else %}-999999{% endif %}">
@@ -169,11 +189,31 @@
                         {% if row.sale_date %}{{ row.sale_date|date:"d.m.Y" }}{% endif %}
                     </div>
                 </td>
+                <td data-sort="{% if row.accrual_date %}{{ row.accrual_date|date:'Y-m-d' }}{% else %}0{% endif %}">
+                    <div class="child-cell-content">
+                        {% if row.status_key == 'sold' and row.accrual_date %}{{ row.accrual_date|date:"d.m.Y" }}{% endif %}
+                    </div>
+                </td>
+                <td data-sort="{% if row.accrual_id %}{{ row.accrual_id }}{% endif %}">
+                    <div class="child-cell-content">
+                        {% if row.status_key == 'sold' %}{{ row.accrual_id }}{% endif %}
+                    </div>
+                </td>
             </tr>
             {% endfor %}
+            {% if group.count > 15 %}
+            <tr class="child-row load-more-row" data-child-index="{{ group.count }}">
+                <td colspan="9">
+                    <div class="child-cell-content load-more-content">
+                        <button type="button" class="btn-secondary-saas load-more-children">Загрузить ещё</button>
+                    </div>
+                </td>
+            </tr>
+            {% endif %}
+            {% endif %}
             {% empty %}
             <tr>
-                <td colspan="7">
+                <td colspan="9">
                     <div class="empty-state">
                         <div class="empty-icon">📭</div>
                         <h5>Товаров пока нет</h5>
@@ -190,6 +230,37 @@
 </div>
 
 {% include "web/includes/pagination.html" %}
+
+<div class="cost-modal-backdrop" id="accrualModal" aria-hidden="true">
+    <div class="cost-modal accrual-modal" role="dialog" aria-modal="true" aria-labelledby="accrualModalTitle">
+        <div class="cost-modal-header">
+            <h2 id="accrualModalTitle">Списания OZON</h2>
+            <button type="button" class="cost-modal-close accrual-modal-close" aria-label="Закрыть">×</button>
+        </div>
+        <div class="accrual-summary">
+            <div>
+                <span>Цена продажи</span>
+                <strong id="accrualGrossPrice">0.00</strong>
+            </div>
+            <div>
+                <span>Списания</span>
+                <strong id="accrualDeductions">0.00</strong>
+            </div>
+            <div>
+                <span>Чистый доход</span>
+                <strong id="accrualNetIncome">0.00</strong>
+            </div>
+        </div>
+        <div class="accrual-section">
+            <h3>Услуги и комиссии</h3>
+            <div id="accrualServices" class="accrual-list"></div>
+        </div>
+        <div class="accrual-section">
+            <h3>Тип списания</h3>
+            <div id="accrualItems" class="accrual-list"></div>
+        </div>
+    </div>
+</div>
 
 <div
     class="cost-modal-backdrop"
