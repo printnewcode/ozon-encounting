@@ -581,12 +581,18 @@ class OzonSyncService:
     @transaction.atomic
     def sync_postings(self, date_from: date, date_to: date) -> OzonSyncResult:
         result = OzonSyncResult()
+        finance_operations = []
 
         for chunk_from, chunk_to in chunked_date_range(date_from, date_to):
             date_from_value = as_ozon_datetime(chunk_from)
             date_to_value = as_ozon_datetime(chunk_to, end_of_day=True)
-            finance_index = build_finance_index(self.client.finance_transactions(date_from_value, date_to_value))
+            finance_operations.extend(self.client.finance_transactions(date_from_value, date_to_value))
 
+        finance_index = build_finance_index(finance_operations)
+
+        for chunk_from, chunk_to in chunked_date_range(date_from, date_to):
+            date_from_value = as_ozon_datetime(chunk_from)
+            date_to_value = as_ozon_datetime(chunk_to, end_of_day=True)
             for posting in self.client.fbo_postings(date_from_value, date_to_value):
                 self.create_sales_from_posting(posting, 'fbo', result, finance_index)
 

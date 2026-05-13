@@ -265,6 +265,57 @@ class OzonSyncTests(TestCase):
         self.assertEqual(client.finance_transaction_periods[0][1], '2026-04-28T23:59:59.999999Z')
         self.assertEqual(client.finance_transaction_periods[1][0], '2026-04-29T00:00:00Z')
 
+    def test_sync_postings_matches_finance_from_later_chunk(self):
+        class CrossChunkFinanceClient(FakeOzonClient):
+            def fbo_postings(self, date_from, date_to):
+                if date_from.startswith('2026-04-01'):
+                    return iter([
+                        {
+                            'posting_number': 'CROSS-1',
+                            'in_process_at': '2026-04-20T10:00:00Z',
+                            'products': [
+                                {'offer_id': 'OZON-1', 'sku': 202, 'name': 'Товар Ozon', 'price': '150.00', 'quantity': 1},
+                            ],
+                        },
+                    ])
+                return iter([])
+
+            def fbs_postings(self, date_from, date_to):
+                return iter([])
+
+            def finance_transactions(self, date_from, date_to):
+                self.finance_transaction_periods.append((date_from, date_to))
+                if date_from.startswith('2026-04-29'):
+                    return iter([
+                        {
+                            'operation_id': 777,
+                            'operation_date': '2026-05-05 00:00:00',
+                            'posting': {'posting_number': 'CROSS-1'},
+                            'amount': '90.00',
+                            'items': [{'sku': 202, 'accruals_for_sale': '150.00'}],
+                            'services': [{'name': 'MarketplaceServiceItemDirectFlowLogistic', 'price': '-60.00'}],
+                        },
+                    ])
+                return iter([])
+
+        Product.objects.create(
+            article='OZON-1',
+            name='Товар Ozon',
+            quantity=1,
+            purchase_price=Decimal('50.00'),
+            delivery_cost=Decimal('10.00'),
+            ozon_sku=202,
+        )
+        service = OzonSyncService(client=CrossChunkFinanceClient(finance_transactions=[]))
+
+        result = service.sync_postings(date(2026, 4, 1), date(2026, 5, 9))
+
+        sale = SaleRecord.objects.get(posting_number='CROSS-1')
+        self.assertEqual(result.sales_created, 1)
+        self.assertEqual(sale.income, Decimal('90.00'))
+        self.assertEqual(sale.accrual_id, '777')
+        self.assertEqual(sale.accrual_date, date(2026, 5, 5))
+
 
 class ProductListTests(TestCase):
     def test_product_list_is_paginated_by_groups(self):
