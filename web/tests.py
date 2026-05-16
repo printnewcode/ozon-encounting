@@ -9,7 +9,7 @@ from django.utils import timezone
 from django.urls import reverse
 from openpyxl import load_workbook
 
-from .models import Product, SaleRecord
+from .models import Product, SaleRecord, SupplyBatch
 from .services.ozon_sync import OzonSyncService
 from .views import parse_file
 
@@ -131,7 +131,8 @@ class OzonSyncTests(TestCase):
 
         product = Product.objects.get(article='OZON-1')
         self.assertEqual(result.stocks_updated, 1)
-        self.assertEqual(product.quantity, 5)
+        self.assertEqual(product.quantity, 0)
+        self.assertEqual(product.ozon_quantity, 5)
         self.assertEqual(product.status, 'in_sale')
 
     def test_sync_stocks_keeps_blocked_product_out_of_sale(self):
@@ -149,8 +150,9 @@ class OzonSyncTests(TestCase):
 
         product.refresh_from_db()
         self.assertEqual(result.stocks_updated, 1)
-        self.assertEqual(product.quantity, 5)
-        self.assertEqual(product.status, 'in_stock')
+        self.assertEqual(product.quantity, 0)
+        self.assertEqual(product.ozon_quantity, 5)
+        self.assertEqual(product.status, 'in_stock_ozon')
 
     def test_sync_stocks_uses_warehouse_analytics_when_product_stocks_are_empty(self):
         client = FakeOzonClient(
@@ -174,8 +176,26 @@ class OzonSyncTests(TestCase):
 
         product = Product.objects.get(article='OZON-1')
         self.assertEqual(result.stocks_updated, 1)
-        self.assertEqual(product.quantity, 15)
+        self.assertEqual(product.quantity, 0)
+        self.assertEqual(product.ozon_quantity, 15)
         self.assertEqual(product.status, 'in_sale')
+
+    def test_sync_stocks_does_not_overwrite_supply_stock(self):
+        Product.objects.create(
+            article='OZON-1',
+            name='Товар Ozon',
+            quantity=7,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='in_stock_warehouse',
+        )
+
+        result = self.service.sync_stocks()
+
+        product = Product.objects.get(article='OZON-1')
+        self.assertEqual(result.stocks_updated, 1)
+        self.assertEqual(product.quantity, 7)
+        self.assertEqual(product.ozon_quantity, 5)
 
     def test_sync_postings_creates_sales_without_duplicates(self):
         product = Product.objects.create(
@@ -399,7 +419,7 @@ class ProductListTests(TestCase):
             quantity=1,
             purchase_price=Decimal('100.00'),
             delivery_cost=Decimal('20.00'),
-            status='in_stock',
+            status='in_stock_warehouse',
         )
         SaleRecord.objects.create(product=positive_product, sale_type='free', income=Decimal('200.00'), sale_date=date(2026, 4, 10))
         SaleRecord.objects.create(product=positive_product, sale_type='free', income=Decimal('210.00'), sale_date=date(2026, 4, 20))
@@ -422,12 +442,13 @@ class ProductListTests(TestCase):
             quantity=1,
             purchase_price=Decimal('100.00'),
             delivery_cost=Decimal('20.00'),
-            status='in_stock',
+            status='in_stock_warehouse',
         )
         Product.objects.create(
             article='SKU-SALE',
             name='Sale',
-            quantity=1,
+            quantity=0,
+            ozon_quantity=1,
             purchase_price=Decimal('100.00'),
             delivery_cost=Decimal('20.00'),
             status='in_sale',
@@ -449,7 +470,7 @@ class ProductListTests(TestCase):
             quantity=0,
             purchase_price=Decimal('100.00'),
             delivery_cost=Decimal('20.00'),
-            status='in_stock',
+            status='in_stock_warehouse',
         )
 
         response = self.client.get(reverse('product_list'), {'article': 'SKU-ZERO'})
@@ -498,7 +519,8 @@ class ProductListTests(TestCase):
         Product.objects.create(
             article='JGET100001PERKLIC',
             name='Switch',
-            quantity=1,
+            quantity=0,
+            ozon_quantity=1,
             purchase_price=Decimal('100.00'),
             delivery_cost=Decimal('20.00'),
             status='in_sale',
@@ -509,7 +531,7 @@ class ProductListTests(TestCase):
             quantity=1,
             purchase_price=Decimal('100.00'),
             delivery_cost=Decimal('20.00'),
-            status='in_stock',
+            status='in_stock_warehouse',
         )
 
         response = self.client.get(reverse('product_list'), {'article': 'perklic'})
@@ -537,6 +559,76 @@ class ProductListTests(TestCase):
         self.assertEqual(second_page.context['groups'][0]['article'], 'SKU-04')
         self.assertEqual(second_page.context['groups'][-1]['article'], 'SKU-00')
 
+    def test_product_list_defaults_stock_groups_by_quantity_desc(self):
+        for article, quantity in [('SKU-LOW', 2), ('SKU-HIGH', 9), ('SKU-MID', 5)]:
+            Product.objects.create(
+                article=article,
+                name=article,
+                quantity=quantity,
+                purchase_price=Decimal('100.00'),
+                delivery_cost=Decimal('20.00'),
+                status='in_stock_warehouse',
+            )
+
+        response = self.client.get(reverse('product_list'))
+
+        self.assertEqual(
+            [group['article'] for group in response.context['groups'][:3]],
+            ['SKU-HIGH', 'SKU-MID', 'SKU-LOW'],
+        )
+
+    def test_product_list_expands_warehouse_only_for_multiple_batches(self):
+        single = Product.objects.create(
+            article='SKU-SINGLE',
+            name='Single batch',
+            quantity=2,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+            status='in_stock_warehouse',
+        )
+        SupplyBatch.objects.create(
+            product=single,
+            initial_quantity=2,
+            remaining_quantity=2,
+            cost_remaining_quantity=2,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+        )
+        multi = Product.objects.create(
+            article='SKU-MULTI',
+            name='Multi batch',
+            quantity=5,
+            purchase_price=Decimal('200.00'),
+            delivery_cost=Decimal('20.00'),
+            status='in_stock_warehouse',
+        )
+        SupplyBatch.objects.create(
+            product=multi,
+            initial_quantity=2,
+            remaining_quantity=2,
+            cost_remaining_quantity=2,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('20.00'),
+        )
+        SupplyBatch.objects.create(
+            product=multi,
+            initial_quantity=3,
+            remaining_quantity=3,
+            cost_remaining_quantity=3,
+            purchase_price=Decimal('200.00'),
+            delivery_cost=Decimal('20.00'),
+        )
+
+        response = self.client.get(reverse('product_list'), {'article': 'SKU-'})
+
+        groups = {group['article']: group for group in response.context['groups']}
+        self.assertFalse(groups['SKU-SINGLE']['can_expand'])
+        self.assertTrue(groups['SKU-MULTI']['can_expand'])
+        self.assertEqual(
+            [row['cost_price'] for row in groups['SKU-MULTI']['rows']],
+            [Decimal('120.00'), Decimal('220.00')],
+        )
+
 
 class SaleUploadTests(TestCase):
     def setUp(self):
@@ -563,7 +655,7 @@ class SaleUploadTests(TestCase):
         self.assertRedirects(response, reverse('product_list'))
         self.product.refresh_from_db()
         self.assertEqual(self.product.quantity, 1)
-        self.assertEqual(self.product.status, 'in_sale')
+        self.assertEqual(self.product.status, 'in_stock_warehouse')
         self.assertEqual(SaleRecord.objects.count(), 2)
         self.assertEqual(SaleRecord.objects.first().profit, Decimal('75.50'))
 
@@ -599,7 +691,7 @@ class SaleUploadTests(TestCase):
         self.assertRedirects(response, reverse('product_list'))
         self.product.refresh_from_db()
         self.assertEqual(self.product.quantity, 2)
-        self.assertEqual(self.product.status, 'in_stock')
+        self.assertEqual(self.product.status, 'in_stock_warehouse')
 
     def test_sales_upload_warns_about_name_mismatch_and_oversell(self):
         upload = SimpleUploadedFile(
@@ -620,6 +712,48 @@ class SaleUploadTests(TestCase):
         self.product.refresh_from_db()
         self.assertEqual(self.product.status, 'sold')
 
+    def test_sales_upload_uses_fifo_batch_costs(self):
+        SupplyBatch.objects.create(
+            product=self.product,
+            initial_quantity=2,
+            remaining_quantity=2,
+            cost_remaining_quantity=2,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('25.00'),
+        )
+        SupplyBatch.objects.create(
+            product=self.product,
+            initial_quantity=1,
+            remaining_quantity=1,
+            cost_remaining_quantity=1,
+            purchase_price=Decimal('300.00'),
+            delivery_cost=Decimal('50.00'),
+        )
+
+        upload = SimpleUploadedFile(
+            'sales.csv',
+            'Артикул;Название;Доход;Количество\nSKU-1;Тестовый товар;200;3\n'.encode('utf-8'),
+            content_type='text/csv',
+        )
+
+        response = self.client.post(
+            reverse('upload_sales'),
+            {'sale_type': 'free', 'file': upload},
+        )
+
+        self.assertRedirects(response, reverse('product_list'))
+        self.product.refresh_from_db()
+        self.assertEqual(self.product.quantity, 0)
+        self.assertEqual(
+            list(SaleRecord.objects.order_by('id').values_list('cost_price', 'profit')),
+            [
+                (Decimal('125.00'), Decimal('75.00')),
+                (Decimal('125.00'), Decimal('75.00')),
+                (Decimal('350.00'), Decimal('-150.00')),
+            ],
+        )
+        self.assertEqual(list(self.product.batches.values_list('remaining_quantity', flat=True)), [0, 0])
+
 
 class SupplyUploadTests(TestCase):
     def test_supply_upload_creates_product_from_csv(self):
@@ -635,6 +769,29 @@ class SupplyUploadTests(TestCase):
         product = Product.objects.get(article='SKU-2')
         self.assertEqual(product.quantity, 4)
         self.assertEqual(product.cost_price, Decimal('60.00'))
+
+    def test_supply_upload_same_article_creates_separate_batches(self):
+        first_upload = SimpleUploadedFile(
+            'supply1.csv',
+            'Артикул;Название;Закупка;Доставка;Себестоимость;Количество\nSKU-2;Товар;50;10;60;4\n'.encode('utf-8'),
+            content_type='text/csv',
+        )
+        second_upload = SimpleUploadedFile(
+            'supply2.csv',
+            'Артикул;Название;Закупка;Доставка;Себестоимость;Количество\nSKU-2;Товар;70;10;80;3\n'.encode('utf-8'),
+            content_type='text/csv',
+        )
+
+        self.client.post(reverse('upload_supply'), {'file': first_upload})
+        self.client.post(reverse('upload_supply'), {'file': second_upload})
+
+        product = Product.objects.get(article='SKU-2')
+        self.assertEqual(product.quantity, 7)
+        self.assertEqual(product.cost_price, Decimal('80.00'))
+        self.assertEqual(
+            list(product.batches.order_by('id').values_list('remaining_quantity', 'cost_price')),
+            [(4, Decimal('60.00')), (3, Decimal('80.00'))],
+        )
 
     def test_supply_upload_supports_headerless_file(self):
         upload = SimpleUploadedFile(
@@ -661,7 +818,8 @@ class ExportTests(TestCase):
             quantity=2,
             purchase_price=Decimal('100.00'),
             delivery_cost=Decimal('20.00'),
-            status='in_sale',
+            ozon_quantity=2,
+            status='in_stock_ozon',
         )
         SaleRecord.objects.create(product=product, sale_type='free', income=Decimal('200.00'), sale_date=date(2026, 4, 10))
         SaleRecord.objects.create(product=product, sale_type='free', income=Decimal('50.00'), sale_date=date(2026, 4, 20))
@@ -673,7 +831,7 @@ class ExportTests(TestCase):
         self.assertEqual(response.context['sales_stats_title'], 'За все время')
         self.assertEqual(response.context['sales_stats']['sales_count'], 2)
         self.assertEqual(response.context['sales_stats']['profit'], Decimal('10.00'))
-        self.assertEqual(response.context['stock_stats']['in_sale_count'], 2)
+        self.assertEqual(response.context['stock_stats']['in_ozon_count'], 2)
 
     def test_statistics_page_shows_only_period_stats_when_dates_are_selected(self):
         product = Product.objects.create(
@@ -682,7 +840,8 @@ class ExportTests(TestCase):
             quantity=2,
             purchase_price=Decimal('100.00'),
             delivery_cost=Decimal('20.00'),
-            status='in_sale',
+            ozon_quantity=2,
+            status='in_stock_ozon',
         )
         SaleRecord.objects.create(product=product, sale_type='free', income=Decimal('200.00'), sale_date=date(2026, 4, 10))
         SaleRecord.objects.create(product=product, sale_type='free', income=Decimal('50.00'), sale_date=date(2026, 4, 20))
@@ -697,7 +856,7 @@ class ExportTests(TestCase):
         self.assertEqual(response.context['sales_stats_title'], 'За период')
         self.assertEqual(response.context['sales_stats']['sales_count'], 1)
         self.assertEqual(response.context['sales_stats']['profit'], Decimal('-70.00'))
-        self.assertEqual(response.context['stock_stats']['in_sale_count'], 2)
+        self.assertEqual(response.context['stock_stats']['in_ozon_count'], 2)
 
     def test_sales_report_period_defaults_date_to_to_today(self):
         response = self.client.get(reverse('sales_report_period'))
@@ -723,7 +882,9 @@ class ExportTests(TestCase):
         sheet = workbook.active
 
         self.assertEqual(sheet['D2'].value, 125)
-        self.assertEqual(sheet['F2'].value, 75)
+        self.assertEqual(sheet['E2'].value, 200)
+        self.assertEqual(sheet['F2'].value, 200)
+        self.assertEqual(sheet['G2'].value, 75)
 
     def test_sales_report_filters_by_period(self):
         product = Product.objects.create(
@@ -754,8 +915,54 @@ class ExportTests(TestCase):
         sheet = workbook.active
 
         self.assertEqual(sheet.max_row, 2)
-        self.assertEqual(sheet['E2'].value, 300)
-        self.assertEqual(sheet['G2'].value.date(), date(2026, 4, 20))
+        self.assertEqual(sheet['F2'].value, 300)
+        self.assertEqual(sheet['H2'].value.date(), date(2026, 4, 20))
+
+    def test_sales_report_exports_gross_price_and_net_income(self):
+        product = Product.objects.create(
+            article='SKU-1',
+            name='Тестовый товар',
+            quantity=1,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('25.00'),
+        )
+        SaleRecord.objects.create(
+            product=product,
+            sale_type='ozon',
+            income=Decimal('160.00'),
+            accrual_details={'gross_price': '220.00'},
+        )
+
+        response = self.client.get(reverse('export_sales_report'))
+        workbook = load_workbook(BytesIO(response.content))
+        sheet = workbook.active
+
+        self.assertEqual(sheet['E1'].value, 'Цена продажи')
+        self.assertEqual(sheet['F1'].value, 'Чистый доход')
+        self.assertEqual(sheet['E2'].value, 220)
+        self.assertEqual(sheet['F2'].value, 160)
+
+    def test_stock_balance_exports_warehouse_and_ozon_separately(self):
+        Product.objects.create(
+            article='SKU-1',
+            name='Тестовый товар',
+            quantity=7,
+            ozon_quantity=5,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('25.00'),
+            status='in_stock_ozon',
+        )
+
+        response = self.client.get(reverse('export_stock_balance'))
+        workbook = load_workbook(BytesIO(response.content))
+        sheet = workbook.active
+
+        self.assertEqual(sheet['F1'].value, 'В наличии/Склад')
+        self.assertEqual(sheet['G1'].value, 'В наличии/OZON')
+        self.assertEqual(sheet['H1'].value, 'Всего')
+        self.assertEqual(sheet['F2'].value, 7)
+        self.assertEqual(sheet['G2'].value, 5)
+        self.assertEqual(sheet['H2'].value, 12)
 
     def test_sales_report_rejects_invalid_period(self):
         response = self.client.get(reverse('export_sales_report'), {

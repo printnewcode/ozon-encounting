@@ -18,17 +18,18 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from .forms import SalesReportPeriodForm, SalesUploadForm, SupplyUploadForm
-from .models import Product, SaleRecord
+from .models import Product, SaleRecord, SupplyBatch
 from .services.ozon_client import OzonAPIError
-from .services.ozon_sync import OzonSyncService
+from .services.inventory import allocate_unit_cost, create_supply_batch, sync_product_warehouse_quantity
+from .services.ozon_sync import OzonSyncService, product_status_from_ozon
 
 
-MONEY_HEADERS = ('Стоимость в закупке', 'Доставка', 'Себестоимость', 'Доход', 'Прибыль')
+MONEY_HEADERS = ('Стоимость в закупке', 'Доставка', 'Себестоимость', 'Цена продажи', 'Доход', 'Чистый доход', 'Прибыль')
 DATE_HEADER = 'Дата продажи'
 CSV_ENCODINGS = ('utf-8-sig', 'utf-8', 'cp1251')
 MAX_VISIBLE_WARNINGS = 5
 PRODUCT_GROUPS_PER_PAGE = 25
-PRODUCT_FILTERS = ('sold', 'in_stock', 'in_sale', 'profit_positive', 'profit_negative')
+PRODUCT_FILTERS = ('sold', 'in_stock_warehouse', 'in_stock_ozon', 'in_sale', 'profit_positive', 'profit_negative')
 PRODUCT_SORTS = ('article', 'name', 'status', 'cost', 'income', 'profit', 'date', 'accrual_date', 'accrual_id')
 
 
@@ -162,9 +163,22 @@ def show_import_warnings(request, warnings: list[str]) -> None:
 
 
 def sale_cost_price(sale: SaleRecord) -> Decimal:
+    if sale.cost_price is not None:
+        return sale.cost_price
     if sale.profit is not None:
         return sale.income - sale.profit
     return sale.product.cost_price
+
+
+def sale_gross_price(sale: SaleRecord) -> Decimal:
+    details = sale.accrual_details or {}
+    gross_price = details.get('gross_price')
+    if gross_price not in (None, ''):
+        try:
+            return Decimal(str(gross_price)).quantize(Decimal('0.01'))
+        except (InvalidOperation, ValueError):
+            pass
+    return sale.income
 
 
 def parse_file(file) -> pd.DataFrame:
@@ -237,7 +251,7 @@ def upload_supply(request):
                                 'purchase_price': purchase_price,
                                 'delivery_cost': delivery_cost,
                                 'quantity': quantity,
-                                'status': 'in_stock',
+                                'status': 'in_stock_warehouse',
                             },
                         )
                         if not created:
@@ -254,9 +268,10 @@ def upload_supply(request):
                             product.purchase_price = purchase_price
                             product.delivery_cost = delivery_cost
                             product.quantity += quantity
-                            product.status = 'in_stock'
+                            product.status = 'in_stock_warehouse'
                             product.save()
 
+                        create_supply_batch(product, quantity, purchase_price, delivery_cost)
                         products_created += 1
 
                 messages.success(request, f'Успешно загружено {products_created} товаров из поставки.')
@@ -322,21 +337,30 @@ def upload_sales(request):
                                 f"По артикулу {article} продано {quantity_sold}, а в остатке было {product.quantity}; остаток обнулен.",
                             )
 
-                        product.quantity -= quantity_sold
-                        if product.quantity <= 0:
-                            product.status = 'sold'
-                            product.quantity = 0
-                        elif sale_type == 'ozon':
-                            product.status = 'in_sale'
-                        product.save()
-
                         for _ in range(quantity_sold):
+                            batch, cost_price = allocate_unit_cost(product, consume_warehouse=True)
                             SaleRecord.objects.create(
                                 product=product,
+                                supply_batch=batch,
                                 sale_type=sale_type,
                                 income=income,
+                                cost_price=cost_price,
                             )
                         sales_created += quantity_sold
+
+                        if product.batches.exists():
+                            sync_product_warehouse_quantity(product)
+                        else:
+                            product.quantity -= quantity_sold
+                            if product.quantity <= 0:
+                                product.quantity = 0
+                                if product.ozon_quantity > 0:
+                                    product.status = product_status_from_ozon(product, product.ozon_quantity)
+                                else:
+                                    product.status = 'sold'
+                            else:
+                                product.status = 'in_stock_warehouse'
+                            product.save()
 
                 if sales_created > 0:
                     messages.success(request, f'Успешно загружено {sales_created} записей о продажах.')
@@ -365,9 +389,10 @@ def product_list(request):
     if active_direction not in ('asc', 'desc'):
         active_direction = 'asc'
     status_order = {
-        'in_stock': 0,
-        'in_sale': 1,
-        'sold': 2,
+        'in_stock_warehouse': 0,
+        'in_stock_ozon': 1,
+        'in_sale': 2,
+        'sold': 3,
     }
 
     def get_group(article, status_key, name, status_label):
@@ -379,6 +404,7 @@ def product_list(request):
                 'status_key': status_key,
                 'status_label': status_label,
                 'rows': [],
+                'can_expand': False,
                 'count': 0,
                 'total_income': Decimal('0'),
                 'total_profit': Decimal('0'),
@@ -389,51 +415,66 @@ def product_list(request):
             }
         return groups_dict[group_key]
 
-    unsold = Product.objects.filter(status__in=['in_stock', 'in_sale']).order_by('article', 'created_at')
-    for product in unsold:
-        group = get_group(product.article, product.status, product.name, product.get_status_display())
+    def append_stock_group(product, status_key, status_label, quantity):
+        group = get_group(product.article, status_key, product.name, status_label)
         if product.id not in group['product_ids']:
             group['product_ids'].append(product.id)
+        group['count'] += max(quantity, 0)
 
-        if product.status == 'in_stock':
-            group['rows'].append({
-                'product_id': product.id,
-                'article': product.article,
-                'name': product.name,
-                'status_key': product.status,
-                'status_label': product.get_status_display(),
-                'cost_price': product.cost_price,
-                'income': None,
-                'profit': None,
-                'sale_date': None,
-                'accrual_date': None,
-                'accrual_id': '',
-                'accrual_details_json': '',
-            })
-            group['count'] += max(product.quantity, 0)
-            continue
+        batches = []
+        if status_key == 'in_stock_warehouse':
+            batches = list(product.batches.filter(remaining_quantity__gt=0).order_by('created_at', 'id'))
+            group['can_expand'] = len(batches) > 1
 
-        remaining_count = max(product.quantity, 1)
-        for _ in range(remaining_count):
-            group['rows'].append({
-                'product_id': product.id,
-                'article': product.article,
-                'name': product.name,
-                'status_key': product.status,
-                'status_label': product.get_status_display(),
-                'cost_price': product.cost_price,
-                'income': None,
-                'profit': None,
-                'sale_date': None,
-                'accrual_date': None,
-                'accrual_id': '',
-                'accrual_details_json': '',
-            })
-            group['count'] += 1
+        if group['can_expand']:
+            for batch in batches:
+                group['rows'].append({
+                    'product_id': product.id,
+                    'article': product.article,
+                    'name': f'Поставка от {batch.created_at:%d.%m.%Y}',
+                    'quantity': batch.remaining_quantity,
+                    'status_key': status_key,
+                    'status_label': status_label,
+                    'cost_price': batch.cost_price,
+                    'income': None,
+                    'profit': None,
+                    'sale_date': None,
+                    'accrual_date': None,
+                    'accrual_id': '',
+                    'accrual_details_json': '',
+                })
+            return
+
+        group['rows'].append({
+            'product_id': product.id,
+            'article': product.article,
+            'name': product.name,
+            'quantity': quantity,
+            'status_key': status_key,
+            'status_label': status_label,
+            'cost_price': product.cost_price,
+            'income': None,
+            'profit': None,
+            'sale_date': None,
+            'accrual_date': None,
+            'accrual_id': '',
+            'accrual_details_json': '',
+        })
+
+    unsold = Product.objects.filter(status__in=['in_stock_warehouse', 'in_stock_ozon', 'in_sale']).order_by('article', 'created_at')
+    for product in unsold:
+        if product.quantity > 0 or product.status == 'in_stock_warehouse':
+            append_stock_group(product, 'in_stock_warehouse', 'В наличии/Склад', product.quantity)
+        if product.ozon_quantity > 0 or (product.status in {'in_stock_ozon', 'in_sale'} and product.quantity <= 0):
+            if product.status == 'in_sale':
+                append_stock_group(product, 'in_sale', 'В продаже', product.ozon_quantity)
+            else:
+                append_stock_group(product, 'in_stock_ozon', 'В наличии/OZON', product.ozon_quantity)
 
     sales = SaleRecord.objects.select_related('product').order_by('article', 'sale_date', 'created_at')
     for sale in sales:
         group = get_group(sale.article, 'sold', sale.name, 'Продан')
+        group['can_expand'] = True
 
         group['rows'].append({
             'product_id': sale.product_id,
@@ -441,6 +482,7 @@ def product_list(request):
             'name': sale.name,
             'status_key': 'sold',
             'status_label': 'Продан',
+            'quantity': None,
             'cost_price': sale_cost_price(sale),
             'income': sale.income,
             'profit': sale.profit,
@@ -503,10 +545,12 @@ def product_list(request):
         group['primary_product_id'] = group['product_ids'][0] if group['product_ids'] else ''
         groups.append(group)
 
-    groups.sort(
-        key=lambda item: (sort_value(item), item['sort_status'], str(item['article']).lower(), str(item['name']).lower()),
-        reverse=active_direction == 'desc',
-    )
+    def group_sort_key(item):
+        if active_sort == 'status' and item['status_key'] in {'in_stock_warehouse', 'in_stock_ozon'}:
+            return (item['sort_status'], -item['count'], str(item['article']).lower(), str(item['name']).lower())
+        return (sort_value(item), item['sort_status'], str(item['article']).lower(), str(item['name']).lower())
+
+    groups.sort(key=group_sort_key, reverse=active_direction == 'desc')
 
     paginator = Paginator(groups, PRODUCT_GROUPS_PER_PAGE)
     page_obj = paginator.get_page(request.GET.get('page'))
@@ -564,12 +608,17 @@ def update_cost_price(request):
 
     with transaction.atomic():
         try:
-            product = Product.objects.select_for_update().get(id=product_id, status='in_stock')
+            product = Product.objects.select_for_update().get(
+                id=product_id,
+                status__in=['in_stock_warehouse', 'in_stock_ozon', 'in_sale'],
+            )
         except Product.DoesNotExist:
             return JsonResponse({'ok': False, 'error': 'Товар в наличии не найден.'}, status=404)
 
         sale_queryset = SaleRecord.objects.select_for_update().filter(article=product.article)
-        sales_snapshot = list(sale_queryset.values('id', 'profit'))
+        sales_snapshot = list(sale_queryset.values('id', 'cost_price', 'profit'))
+        batch_queryset = SupplyBatch.objects.select_for_update().filter(product=product, remaining_quantity__gt=0)
+        batches_snapshot = list(batch_queryset.values('id', 'purchase_price', 'delivery_cost'))
 
         request.session['cost_price_undo'] = {
             'product_id': product.id,
@@ -578,20 +627,37 @@ def update_cost_price(request):
             'delivery_cost': str(product.delivery_cost),
             'cost_price': str(product.cost_price),
             'sales': [
-                {'id': sale['id'], 'profit': str(sale['profit']) if sale['profit'] is not None else None}
+                {
+                    'id': sale['id'],
+                    'cost_price': str(sale['cost_price']) if sale['cost_price'] is not None else None,
+                    'profit': str(sale['profit']) if sale['profit'] is not None else None,
+                }
                 for sale in sales_snapshot
+            ],
+            'batches': [
+                {
+                    'id': batch['id'],
+                    'purchase_price': str(batch['purchase_price']),
+                    'delivery_cost': str(batch['delivery_cost']),
+                }
+                for batch in batches_snapshot
             ],
         }
 
         product.purchase_price = new_cost_price
         product.delivery_cost = Decimal('0.00')
         product.save()
+        for batch in batch_queryset:
+            batch.purchase_price = new_cost_price
+            batch.delivery_cost = Decimal('0.00')
+            batch.save()
 
         updated_sales = 0
         if apply_to_sales:
             for sale in sale_queryset:
+                sale.cost_price = new_cost_price
                 sale.profit = sale.income - new_cost_price
-                sale.save(update_fields=['profit'])
+                sale.save(update_fields=['cost_price', 'profit'])
                 updated_sales += 1
 
     return JsonResponse({
@@ -618,9 +684,17 @@ def undo_cost_price(request):
         product.delivery_cost = Decimal(undo_data['delivery_cost'])
         product.save()
 
+        for batch_data in undo_data.get('batches', []):
+            batch = SupplyBatch.objects.filter(id=batch_data['id'], product=product).first()
+            if batch:
+                batch.purchase_price = Decimal(batch_data['purchase_price'])
+                batch.delivery_cost = Decimal(batch_data['delivery_cost'])
+                batch.save()
+
         restored_sales = 0
         for sale_data in undo_data.get('sales', []):
             updated = SaleRecord.objects.filter(id=sale_data['id']).update(
+                cost_price=Decimal(sale_data['cost_price']) if sale_data.get('cost_price') is not None else None,
                 profit=Decimal(sale_data['profit']) if sale_data['profit'] is not None else None,
             )
             restored_sales += updated
@@ -679,16 +753,15 @@ def sales_statistics(request):
 
     stock_stats = {
         'in_stock_count': 0,
-        'in_sale_count': 0,
+        'in_ozon_count': 0,
         'stock_value': Decimal('0'),
     }
-    for product in Product.objects.filter(status__in=['in_stock', 'in_sale']):
-        quantity = max(product.quantity, 0)
-        if product.status == 'in_stock':
-            stock_stats['in_stock_count'] += quantity
-        elif product.status == 'in_sale':
-            stock_stats['in_sale_count'] += quantity
-        stock_stats['stock_value'] += product.cost_price * quantity
+    for product in Product.objects.all():
+        warehouse_quantity = max(product.quantity, 0)
+        ozon_quantity = max(product.ozon_quantity, 0)
+        stock_stats['in_stock_count'] += warehouse_quantity
+        stock_stats['in_ozon_count'] += ozon_quantity
+        stock_stats['stock_value'] += product.cost_price * (warehouse_quantity + ozon_quantity)
 
     return render(request, 'web/statistics.html', {
         'form': form,
@@ -740,7 +813,7 @@ def export_sales_report(request):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = 'Отчет продаж'
-    sheet.append(['Артикул', 'Название', 'Состояние', 'Себестоимость', 'Доход', 'Прибыль', 'Дата продажи'])
+    sheet.append(['Артикул', 'Название', 'Состояние', 'Себестоимость', 'Цена продажи', 'Чистый доход', 'Прибыль', 'Дата продажи'])
 
     sales = SaleRecord.objects.select_related('product').order_by('sale_date', 'created_at', 'article')
     date_from = form.cleaned_data.get('date_from')
@@ -760,12 +833,13 @@ def export_sales_report(request):
             sale.name,
             'Продан',
             sale_cost_price(sale),
+            sale_gross_price(sale),
             sale.income,
             sale.profit,
             sale.sale_date,
         ])
 
-    style_export_sheet(sheet, [20, 36, 16, 16, 14, 14, 16])
+    style_export_sheet(sheet, [20, 36, 16, 16, 16, 16, 14, 16])
     return workbook_response(workbook, export_filename('Отчет_продаж'))
 
 
@@ -779,14 +853,15 @@ def export_stock_balance(request):
         'Стоимость в закупке',
         'Доставка',
         'Себестоимость',
-        'На складе',
-        'В продаже',
+        'В наличии/Склад',
+        'В наличии/OZON',
+        'Всего',
     ])
 
     products = Product.objects.order_by('article', 'name')
     for product in products:
-        in_stock = product.quantity if product.status == 'in_stock' else 0
-        in_sale = product.quantity if product.status == 'in_sale' else 0
+        in_stock = max(product.quantity, 0)
+        in_ozon = max(product.ozon_quantity, 0)
         sheet.append([
             product.article,
             product.name,
@@ -794,8 +869,9 @@ def export_stock_balance(request):
             product.delivery_cost,
             product.cost_price,
             in_stock,
-            in_sale,
+            in_ozon,
+            in_stock + in_ozon,
         ])
 
-    style_export_sheet(sheet, [20, 36, 20, 14, 16, 14, 14])
+    style_export_sheet(sheet, [20, 36, 20, 14, 16, 18, 18, 14])
     return workbook_response(workbook, export_filename('Учет_остатков'))

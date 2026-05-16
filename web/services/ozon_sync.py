@@ -7,6 +7,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from ..models import Product, SaleRecord
+from .inventory import allocate_unit_cost
 from .ozon_client import OzonSellerClient
 
 
@@ -455,7 +456,8 @@ def product_defaults(item: dict) -> dict:
         'purchase_price': Decimal('0.00'),
         'delivery_cost': Decimal('0.00'),
         'quantity': 0,
-        'status': 'in_stock',
+        'ozon_quantity': 0,
+        'status': 'in_stock_ozon',
         'ozon_product_id': item_product_id(item),
         'ozon_sku': item_sku(item),
         'ozon_visibility': item_visibility(item),
@@ -495,9 +497,13 @@ def is_product_sellable(product: Product, quantity: int) -> bool:
 def product_status_from_ozon(product: Product, quantity: int) -> str:
     if is_product_sellable(product, quantity):
         return 'in_sale'
+    if quantity > 0:
+        return 'in_stock_ozon'
+    if product.quantity > 0:
+        return 'in_stock_warehouse'
     if quantity == 0 and product.sales.exists():
         return 'sold'
-    return 'in_stock'
+    return 'in_stock_ozon'
 
 
 class OzonSyncService:
@@ -554,8 +560,8 @@ class OzonSyncService:
             update_product_from_ozon(product, item)
             status = product_status_from_ozon(product, quantity)
 
-            if product.quantity != quantity or product.status != status:
-                product.quantity = quantity
+            if product.ozon_quantity != quantity or product.status != status:
+                product.ozon_quantity = quantity
                 product.status = status
                 product.save()
                 result.stocks_updated += 1
@@ -570,8 +576,8 @@ class OzonSyncService:
             )
             status = product_status_from_ozon(product, quantity)
 
-            if product.quantity != quantity or product.status != status:
-                product.quantity = quantity
+            if product.ozon_quantity != quantity or product.status != status:
+                product.ozon_quantity = quantity
                 product.status = status
                 product.save()
                 result.stocks_updated += 1
@@ -653,10 +659,13 @@ class OzonSyncService:
                     result.sales_skipped += 1
                     continue
 
+                batch, cost_price = allocate_unit_cost(product, consume_warehouse=False)
                 SaleRecord.objects.create(
                     product=product,
+                    supply_batch=batch,
                     sale_type='ozon',
                     income=income,
+                    cost_price=cost_price,
                     sale_date=sale_date,
                     accrual_date=finance_entry.accrual_date if finance_entry else None,
                     accrual_id=finance_entry.accrual_id if finance_entry else None,

@@ -121,19 +121,14 @@ body {
 
 /* ── STATUS BADGES ───────────────────────── */
 .badge-status {
-    display: inline-flex; align-items: center; gap: 5px;
+    display: inline-flex; align-items: center;
     font-size: 12px; font-weight: 500;
     padding: 3px 10px; border-radius: 20px; white-space: nowrap;
 }
-.badge-status::before {
-    content: ''; width: 6px; height: 6px; border-radius: 50%;
-}
-.badge-in_stock { background: var(--green-light); color: #065F46; }
-.badge-in_stock::before { background: var(--green); }
-.badge-in_sale  { background: var(--teal-light);  color: #1E40AF; }
-.badge-in_sale::before  { background: var(--teal); }
+.badge-in_stock_warehouse { background: var(--green-light); color: #065F46; }
+.badge-in_stock_ozon { background: var(--teal-light);  color: #1E40AF; }
+.badge-in_sale { background: #FFF8D8; color: #92400E; }
 .badge-sold     { background: var(--red-light);   color: #991B1B; }
-.badge-sold::before     { background: var(--accent); }
 
 /* ── BUTTONS ─────────────────────────────── */
 .btn-primary-saas {

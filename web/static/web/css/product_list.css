@@ -29,7 +29,7 @@
 #productsTable th:nth-child(2),
 #productsTable td:nth-child(2) { width: 300px; }
 #productsTable th:nth-child(3),
-#productsTable td:nth-child(3) { width: 130px; }
+#productsTable td:nth-child(3) { width: 155px; }
 #productsTable th:nth-child(4),
 #productsTable td:nth-child(4) { width: 145px; }
 #productsTable th:nth-child(5),
@@ -58,6 +58,11 @@
     text-overflow: ellipsis;
 }
 
+#productsTable td:nth-child(3) {
+    overflow: visible;
+    text-overflow: clip;
+}
+
 #productsTable th:first-child,
 #productsTable td:first-child {
     white-space: nowrap;
@@ -71,7 +76,15 @@
     --row-accent-soft: rgba(14,165,233,.45);
 }
 
-#productsTable tbody tr.row-status-in_stock {
+#productsTable tbody tr.row-status-in_stock_warehouse {
+    --row-bg: var(--bg-card);
+    --row-bg-hover: #FAFAFA;
+    --row-bg-alt: #F6F7F8;
+    --row-accent: var(--text-muted);
+    --row-accent-soft: rgba(156,163,175,.38);
+}
+
+#productsTable tbody tr.row-status-in_stock_ozon {
     --row-bg: var(--bg-card);
     --row-bg-hover: #FAFAFA;
     --row-bg-alt: #F6F7F8;
@@ -507,7 +520,6 @@
     background: var(--orange-light);
     color: #92400E;
 }
-.badge-mixed::before { background: #F59E0B; }
 
 .cost-edit-cell {
     align-items: center;

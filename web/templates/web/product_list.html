@@ -39,7 +39,8 @@
         <summary class="btn-secondary-saas">Фильтр</summary>
         <div class="filter-panel">
             <label><input type="checkbox" name="filters" value="sold" {% if 'sold' in active_filters %}checked{% endif %}> Прод.</label>
-            <label><input type="checkbox" name="filters" value="in_stock" {% if 'in_stock' in active_filters %}checked{% endif %}> Склад</label>
+            <label><input type="checkbox" name="filters" value="in_stock_warehouse" {% if 'in_stock_warehouse' in active_filters %}checked{% endif %}> Склад</label>
+            <label><input type="checkbox" name="filters" value="in_stock_ozon" {% if 'in_stock_ozon' in active_filters %}checked{% endif %}> OZON</label>
             <label><input type="checkbox" name="filters" value="in_sale" {% if 'in_sale' in active_filters %}checked{% endif %}> В прод.</label>
             <label><input type="checkbox" name="filters" value="profit_positive" {% if 'profit_positive' in active_filters %}checked{% endif %}> Плюс</label>
             <label><input type="checkbox" name="filters" value="profit_negative" {% if 'profit_negative' in active_filters %}checked{% endif %}> Минус</label>
@@ -64,9 +65,9 @@
         </thead>
         <tbody id="productsBody">
             {% for group in groups %}
-            <tr class="group-header{% if group.header_status_key == 'in_stock' %} no-expand{% endif %} row-status-{{ group.header_status_key }}{% if group.header_status_key == 'sold' %}{% if group.total_profit < 0 %} row-profit-negative{% else %} row-profit-positive{% endif %}{% endif %}" data-article="{{ group.article }}">
+            <tr class="group-header{% if not group.can_expand %} no-expand{% endif %} row-status-{{ group.header_status_key }}{% if group.header_status_key == 'sold' %}{% if group.total_profit < 0 %} row-profit-negative{% else %} row-profit-positive{% endif %}{% endif %}" data-article="{{ group.article }}">
                 <td data-sort="{{ group.article }}" title="{{ group.article }}">
-                    {% if group.header_status_key != 'in_stock' %}
+                    {% if group.can_expand %}
                     <span class="expand-icon" aria-hidden="true"></span>
                     {% endif %}
                     <span class="cell-article text-clip">{{ group.article }}</span>
@@ -74,7 +75,7 @@
                 <td data-sort="{{ group.name }}" title="{{ group.name }}">
                     <div class="group-name-layout">
                         <span class="cell-name text-clip">{{ group.name }}</span>
-                        <span class="count-badge">{% if group.header_status_key == 'in_stock' %}{{ group.count }} штук{% else %}{{ group.count }} зап.{% endif %}</span>
+                        <span class="count-badge">{% if group.header_status_key == 'in_stock_warehouse' or group.header_status_key == 'in_stock_ozon' %}{{ group.count }} штук{% else %}{{ group.count }} зап.{% endif %}</span>
                     </div>
                 </td>
                 <td data-sort="{{ group.header_status_label }}">
@@ -85,7 +86,7 @@
                 <td data-sort="{{ group.header_cost }}">
                     <div class="cost-edit-cell">
                         <span class="row-cost-value">{{ group.header_cost }}</span>
-                        {% if group.header_status_key == 'in_stock' %}
+                        {% if group.header_status_key == 'in_stock_warehouse' or group.header_status_key == 'in_stock_ozon' or group.header_status_key == 'in_sale' %}
                         <button
                             type="button"
                             class="cost-edit-button"
@@ -118,7 +119,7 @@
                 <td data-sort="0"></td>
                 <td data-sort=""></td>
             </tr>
-            {% if group.header_status_key != 'in_stock' %}
+            {% if group.can_expand %}
             {% for row in group.rows %}
             <tr class="child-row row-status-{{ row.status_key }}{% if row.status_key == 'sold' %}{% if row.profit < 0 %} row-profit-negative{% else %} row-profit-positive{% endif %}{% endif %}{% if forloop.counter|divisibleby:2 %} child-row-alt{% endif %}" data-child-index="{{ forloop.counter0 }}">
                 <td data-sort="{{ row.article }}" title="{{ row.article }}">
@@ -130,6 +131,7 @@
                 <td data-sort="{{ row.name }}" title="{{ row.name }}">
                     <div class="child-cell-content">
                         <span class="cell-name text-clip">{{ row.name }}</span>
+                        {% if row.quantity %}<span class="count-badge">{{ row.quantity }} штук</span>{% endif %}
                     </div>
                 </td>
                 <td data-sort="{{ row.status_label }}">
@@ -142,7 +144,7 @@
                 <td data-sort="{{ row.cost_price }}">
                     <div class="child-cell-content cost-edit-cell">
                         <span class="row-cost-value">{{ row.cost_price }}</span>
-                        {% if row.status_key == 'in_stock' %}
+                        {% if row.status_key == 'in_stock_warehouse' or row.status_key == 'in_stock_ozon' or row.status_key == 'in_sale' %}
                         <button
                             type="button"
                             class="cost-edit-button"
@@ -201,8 +203,8 @@
                 </td>
             </tr>
             {% endfor %}
-            {% if group.count > 15 %}
-            <tr class="child-row load-more-row" data-child-index="{{ group.count }}">
+            {% if group.rows|length > 15 %}
+            <tr class="child-row load-more-row" data-child-index="{{ group.rows|length }}">
                 <td colspan="9">
                     <div class="child-cell-content load-more-content">
                         <button type="button" class="btn-secondary-saas load-more-children">Загрузить ещё</button>
