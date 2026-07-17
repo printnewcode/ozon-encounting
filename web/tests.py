@@ -883,8 +883,9 @@ class ExportTests(TestCase):
 
         self.assertEqual(sheet['D2'].value, 125)
         self.assertEqual(sheet['E2'].value, 200)
-        self.assertEqual(sheet['F2'].value, 200)
-        self.assertEqual(sheet['G2'].value, 75)
+        self.assertEqual(sheet['F2'].value, 0)
+        self.assertEqual(sheet['G2'].value, 200)
+        self.assertEqual(sheet['H2'].value, 75)
 
     def test_sales_report_filters_by_period(self):
         product = Product.objects.create(
@@ -915,8 +916,10 @@ class ExportTests(TestCase):
         sheet = workbook.active
 
         self.assertEqual(sheet.max_row, 2)
-        self.assertEqual(sheet['F2'].value, 300)
-        self.assertEqual(sheet['H2'].value.date(), date(2026, 4, 20))
+        self.assertEqual(sheet['G2'].value, 300)
+        self.assertEqual(sheet['I2'].value.date(), date(2026, 4, 20))
+        self.assertIsNone(sheet['J2'].value)
+        self.assertIn(sheet['K2'].value, (None, ''))
 
     def test_sales_report_exports_gross_price_and_net_income(self):
         product = Product.objects.create(
@@ -931,6 +934,9 @@ class ExportTests(TestCase):
             sale_type='ozon',
             income=Decimal('160.00'),
             accrual_details={'gross_price': '220.00'},
+            sale_date=date(2026, 4, 10),
+            accrual_date=date(2026, 4, 12),
+            accrual_id='987654',
         )
 
         response = self.client.get(reverse('export_sales_report'))
@@ -938,9 +944,45 @@ class ExportTests(TestCase):
         sheet = workbook.active
 
         self.assertEqual(sheet['E1'].value, 'Цена продажи')
-        self.assertEqual(sheet['F1'].value, 'Чистый доход')
+        self.assertEqual(sheet['F1'].value, 'Расходы OZON')
+        self.assertEqual(sheet['G1'].value, 'Чистый доход')
+        self.assertEqual(sheet['J1'].value, 'Дата начисления')
+        self.assertEqual(sheet['K1'].value, 'ID начисления')
         self.assertEqual(sheet['E2'].value, 220)
-        self.assertEqual(sheet['F2'].value, 160)
+        self.assertEqual(sheet['F2'].value, 60)
+        self.assertEqual(sheet['G2'].value, 160)
+        self.assertEqual(sheet['I2'].value.date(), date(2026, 4, 10))
+        self.assertEqual(sheet['J2'].value.date(), date(2026, 4, 12))
+        self.assertEqual(sheet['K2'].value, '987654')
+
+    def test_sales_report_recalculates_profit_from_net_income(self):
+        product = Product.objects.create(
+            article='SKU-1',
+            name='Тестовый товар',
+            quantity=1,
+            purchase_price=Decimal('100.00'),
+            delivery_cost=Decimal('25.00'),
+        )
+        sale = SaleRecord.objects.create(
+            product=product,
+            sale_type='ozon',
+            income=Decimal('220.00'),
+            accrual_details={
+                'gross_price': '220.00',
+                'deductions_total': '60.00',
+                'net_income': '160.00',
+            },
+        )
+        SaleRecord.objects.filter(id=sale.id).update(profit=Decimal('95.00'))
+
+        response = self.client.get(reverse('export_sales_report'))
+        workbook = load_workbook(BytesIO(response.content))
+        sheet = workbook.active
+
+        self.assertEqual(sheet['E2'].value, 220)
+        self.assertEqual(sheet['F2'].value, 60)
+        self.assertEqual(sheet['G2'].value, 160)
+        self.assertEqual(sheet['H2'].value, 35)
 
     def test_stock_balance_exports_warehouse_and_ozon_separately(self):
         Product.objects.create(

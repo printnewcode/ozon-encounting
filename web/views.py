@@ -24,8 +24,8 @@ from .services.inventory import allocate_unit_cost, create_supply_batch, sync_pr
 from .services.ozon_sync import OzonSyncService, product_status_from_ozon
 
 
-MONEY_HEADERS = ('Стоимость в закупке', 'Доставка', 'Себестоимость', 'Цена продажи', 'Доход', 'Чистый доход', 'Прибыль')
-DATE_HEADER = 'Дата продажи'
+MONEY_HEADERS = ('Стоимость в закупке', 'Доставка', 'Себестоимость', 'Цена продажи', 'Расходы OZON', 'Доход', 'Чистый доход', 'Прибыль')
+DATE_HEADERS = ('Дата продажи', 'Дата начисления')
 CSV_ENCODINGS = ('utf-8-sig', 'utf-8', 'cp1251')
 MAX_VISIBLE_WARNINGS = 5
 PRODUCT_GROUPS_PER_PAGE = 25
@@ -107,7 +107,7 @@ def style_export_sheet(sheet, widths: list[int]) -> None:
         for cell in column[1:]:
             if header in MONEY_HEADERS:
                 cell.number_format = '#,##0.00'
-            elif header == DATE_HEADER:
+            elif header in DATE_HEADERS:
                 cell.number_format = 'DD.MM.YYYY'
 
 
@@ -179,6 +179,35 @@ def sale_gross_price(sale: SaleRecord) -> Decimal:
         except (InvalidOperation, ValueError):
             pass
     return sale.income
+
+
+def sale_detail_decimal(sale: SaleRecord, key: str) -> Decimal | None:
+    details = sale.accrual_details or {}
+    value = details.get(key)
+    if value in (None, ''):
+        return None
+    try:
+        return Decimal(str(value)).quantize(Decimal('0.01'))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def sale_net_income(sale: SaleRecord) -> Decimal:
+    net_income = sale_detail_decimal(sale, 'net_income')
+    if net_income is not None:
+        return net_income
+    return sale.income
+
+
+def sale_ozon_expenses(sale: SaleRecord) -> Decimal:
+    deductions_total = sale_detail_decimal(sale, 'deductions_total')
+    if deductions_total is not None:
+        return deductions_total
+    return (sale_gross_price(sale) - sale_net_income(sale)).quantize(Decimal('0.01'))
+
+
+def sale_report_profit(sale: SaleRecord) -> Decimal:
+    return (sale_net_income(sale) - sale_cost_price(sale)).quantize(Decimal('0.01'))
 
 
 def parse_file(file) -> pd.DataFrame:
@@ -813,7 +842,19 @@ def export_sales_report(request):
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = 'Отчет продаж'
-    sheet.append(['Артикул', 'Название', 'Состояние', 'Себестоимость', 'Цена продажи', 'Чистый доход', 'Прибыль', 'Дата продажи'])
+    sheet.append([
+        'Артикул',
+        'Название',
+        'Состояние',
+        'Себестоимость',
+        'Цена продажи',
+        'Расходы OZON',
+        'Чистый доход',
+        'Прибыль',
+        'Дата продажи',
+        'Дата начисления',
+        'ID начисления',
+    ])
 
     sales = SaleRecord.objects.select_related('product').order_by('sale_date', 'created_at', 'article')
     date_from = form.cleaned_data.get('date_from')
@@ -828,18 +869,25 @@ def export_sales_report(request):
         return redirect('sales_report_period')
 
     for sale in sales:
+        cost_price = sale_cost_price(sale)
+        gross_price = sale_gross_price(sale)
+        ozon_expenses = sale_ozon_expenses(sale)
+        net_income = sale_net_income(sale)
         sheet.append([
             sale.article,
             sale.name,
             'Продан',
-            sale_cost_price(sale),
-            sale_gross_price(sale),
-            sale.income,
-            sale.profit,
+            cost_price,
+            gross_price,
+            ozon_expenses,
+            net_income,
+            sale_report_profit(sale),
             sale.sale_date,
+            sale.accrual_date,
+            sale.accrual_id or '',
         ])
 
-    style_export_sheet(sheet, [20, 36, 16, 16, 16, 16, 14, 16])
+    style_export_sheet(sheet, [20, 36, 16, 16, 16, 16, 16, 14, 16, 18, 18])
     return workbook_response(workbook, export_filename('Отчет_продаж'))
 
 

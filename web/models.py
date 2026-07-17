@@ -43,15 +43,15 @@ class SupplyBatch(models.Model):
         Product,
         on_delete=models.CASCADE,
         related_name='batches',
-        verbose_name='РўРѕРІР°СЂ',
+        verbose_name='Товар',
     )
-    initial_quantity = models.IntegerField(default=0, verbose_name='РљРѕР»РёС‡РµСЃС‚РІРѕ РІ РїР°СЂС‚РёРё')
-    remaining_quantity = models.IntegerField(default=0, verbose_name='РћСЃС‚Р°С‚РѕРє РїР°СЂС‚РёРё')
-    cost_remaining_quantity = models.IntegerField(default=0, verbose_name='Остаток для расчета себестоимости')
-    purchase_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='Р—Р°РєСѓРїРѕС‡РЅР°СЏ СЃС‚РѕРёРјРѕСЃС‚СЊ')
-    delivery_cost = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='РЎС‚РѕРёРјРѕСЃС‚СЊ РґРѕСЃС‚Р°РІРєРё')
-    cost_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='РЎРµР±РµСЃС‚РѕРёРјРѕСЃС‚СЊ')
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Р”Р°С‚Р° РїРѕСЃС‚Р°РІРєРё')
+    initial_quantity = models.IntegerField(default=0, verbose_name='Количество')
+    remaining_quantity = models.IntegerField(default=0, verbose_name='Осталось')
+    cost_remaining_quantity = models.IntegerField(default=0, verbose_name='')
+    purchase_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='Цена покупки')
+    delivery_cost = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='Стоимость доставки')
+    cost_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Дата создания')
 
     def save(self, *args, **kwargs) -> None:
         if self.purchase_price is not None and self.delivery_cost is not None:
@@ -63,8 +63,8 @@ class SupplyBatch(models.Model):
 
     class Meta:
         ordering = ('created_at', 'id')
-        verbose_name = 'РџР°СЂС‚РёСЏ РїРѕСЃС‚Р°РІРєРё'
-        verbose_name_plural = 'РџР°СЂС‚РёРё РїРѕСЃС‚Р°РІРѕРє'
+        verbose_name = 'Запись товара'
+        verbose_name_plural = 'Записи товаров'
 
 
 class SaleRecord(models.Model):
