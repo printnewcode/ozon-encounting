@@ -45,13 +45,13 @@ class SupplyBatch(models.Model):
         related_name='batches',
         verbose_name='Товар',
     )
-    initial_quantity = models.IntegerField(default=0, verbose_name='Количество')
-    remaining_quantity = models.IntegerField(default=0, verbose_name='Осталось')
-    cost_remaining_quantity = models.IntegerField(default=0, verbose_name='')
-    purchase_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='Цена покупки')
+    initial_quantity = models.IntegerField(default=0, verbose_name='Количество в партии')
+    remaining_quantity = models.IntegerField(default=0, verbose_name='Остаток партии')
+    cost_remaining_quantity = models.IntegerField(default=0, verbose_name='Остаток для расчета себестоимости')
+    purchase_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='Закупочная стоимость')
     delivery_cost = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='Стоимость доставки')
-    cost_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='')
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Дата создания')
+    cost_price = models.DecimalField(max_digits=10, decimal_places=2, verbose_name='Себестоимость')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Дата поставки')
 
     def save(self, *args, **kwargs) -> None:
         if self.purchase_price is not None and self.delivery_cost is not None:
@@ -63,8 +63,8 @@ class SupplyBatch(models.Model):
 
     class Meta:
         ordering = ('created_at', 'id')
-        verbose_name = 'Запись товара'
-        verbose_name_plural = 'Записи товаров'
+        verbose_name = 'Партия поставки'
+        verbose_name_plural = 'Партии поставок'
 
 
 class SaleRecord(models.Model):

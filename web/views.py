@@ -24,7 +24,7 @@ from .services.inventory import allocate_unit_cost, create_supply_batch, sync_pr
 from .services.ozon_sync import OzonSyncService, product_status_from_ozon
 
 
-MONEY_HEADERS = ('Стоимость в закупке', 'Доставка', 'Себестоимость', 'Цена продажи', 'Расходы OZON', 'Доход', 'Чистый доход', 'Прибыль')
+MONEY_HEADERS = ('Стоимость в закупке', 'Доставка', 'Себестоимость', 'Цена продажи', 'Расходы OZON', 'Доход', 'Прибыль')
 DATE_HEADERS = ('Дата продажи', 'Дата начисления')
 CSV_ENCODINGS = ('utf-8-sig', 'utf-8', 'cp1251')
 MAX_VISIBLE_WARNINGS = 5
@@ -849,7 +849,6 @@ def export_sales_report(request):
         'Себестоимость',
         'Цена продажи',
         'Расходы OZON',
-        'Чистый доход',
         'Прибыль',
         'Дата продажи',
         'Дата начисления',
@@ -872,7 +871,6 @@ def export_sales_report(request):
         cost_price = sale_cost_price(sale)
         gross_price = sale_gross_price(sale)
         ozon_expenses = sale_ozon_expenses(sale)
-        net_income = sale_net_income(sale)
         sheet.append([
             sale.article,
             sale.name,
@@ -880,14 +878,13 @@ def export_sales_report(request):
             cost_price,
             gross_price,
             ozon_expenses,
-            net_income,
             sale_report_profit(sale),
             sale.sale_date,
             sale.accrual_date,
             sale.accrual_id or '',
         ])
 
-    style_export_sheet(sheet, [20, 36, 16, 16, 16, 16, 16, 14, 16, 18, 18])
+    style_export_sheet(sheet, [20, 36, 16, 16, 16, 14, 16, 18, 18])
     return workbook_response(workbook, export_filename('Отчет_продаж'))
 
 
