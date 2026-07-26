@@ -14,8 +14,7 @@ from web.models import Product, SaleRecord
 
 
 ALLOWED_EXTENSIONS = {'.csv', '.xlsx'}
-HEADER_NAMES = {'название', 'название товара', 'товар'}
-HEADER_COSTS = {'себестоимость', 'себестоимость товара'}
+HEADER_COST_PREFIXES = ('себ', 'cost')
 MAX_COST_PRICE = Decimal('99999999.99')
 MAX_FILE_ROWS = 5000
 
@@ -27,6 +26,12 @@ class CostPriceImportError(Exception):
 def normalize_product_name(value) -> str:
     text = unicodedata.normalize('NFKC', str(value or ''))
     return re.sub(r'\s+', ' ', text).strip().casefold()
+
+
+def is_cost_header(value) -> bool:
+    normalized = normalize_product_name(value)
+    compact = re.sub(r'[^a-zа-яё]+', '', normalized)
+    return any(compact.startswith(prefix) for prefix in HEADER_COST_PREFIXES)
 
 
 def parse_cost_price(value, row_number: int) -> Decimal:
@@ -98,8 +103,7 @@ def parsed_cost_rows(uploaded_file) -> list[dict]:
             continue
 
         normalized_name = normalize_product_name(name)
-        normalized_cost_header = normalize_product_name(cost_value)
-        if not rows and normalized_name in HEADER_NAMES and normalized_cost_header in HEADER_COSTS:
+        if not rows and is_cost_header(cost_value):
             continue
 
         if not normalized_name:
@@ -138,12 +142,14 @@ def parsed_cost_rows(uploaded_file) -> list[dict]:
 
 def build_import_preview(uploaded_file) -> dict:
     rows = parsed_cost_rows(uploaded_file)
-    name_counts = {}
+    costs_by_name = {}
     for row in rows:
         normalized_name = row.get('normalized_name')
         if normalized_name:
-            name_counts[normalized_name] = name_counts.get(normalized_name, 0) + 1
-    duplicate_names = {name for name, count in name_counts.items() if count > 1}
+            costs_by_name.setdefault(normalized_name, set()).add(row['cost_price'])
+    conflicting_duplicate_names = {
+        name for name, cost_prices in costs_by_name.items() if len(cost_prices) > 1
+    }
 
     candidates = Product.objects.annotate(
         batch_count=Count('batches', distinct=True),
@@ -171,19 +177,28 @@ def build_import_preview(uploaded_file) -> dict:
         all_products_by_name.setdefault(normalize_product_name(product.name), []).append(product)
 
     preview_rows = []
+    seen_product_names = set()
     for row in rows:
         if row.get('status') == 'invalid':
             preview_rows.append(row)
             continue
 
         normalized_name = row['normalized_name']
-        if normalized_name in duplicate_names:
+        if normalized_name in conflicting_duplicate_names:
             row.update(
                 status='duplicate',
-                message='Название повторяется в загруженном файле.',
+                message='Для одного названия указана разная себестоимость.',
             )
             preview_rows.append(row)
             continue
+        if normalized_name in seen_product_names:
+            row.update(
+                status='skipped_duplicate',
+                message='Дубликат с той же себестоимостью пропущен.',
+            )
+            preview_rows.append(row)
+            continue
+        seen_product_names.add(normalized_name)
 
         matches = candidates_by_name.get(normalized_name, [])
         if len(matches) == 1:
@@ -225,7 +240,15 @@ def build_import_preview(uploaded_file) -> dict:
 
     summary = {
         status: sum(row.get('status') == status for row in preview_rows)
-        for status in ('matched', 'protected', 'not_found', 'ambiguous', 'duplicate', 'invalid')
+        for status in (
+            'matched',
+            'protected',
+            'not_found',
+            'ambiguous',
+            'duplicate',
+            'skipped_duplicate',
+            'invalid',
+        )
     }
     summary['products_to_update'] = sum(
         bool(row.get('update_product')) for row in preview_rows if row.get('status') == 'matched'

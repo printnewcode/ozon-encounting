@@ -147,7 +147,7 @@ class ProductCostImportAdminTests(TestCase):
         self.assertEqual(self.target.cost_price, Decimal('150.50'))
         self.assertEqual(self.old_sale.cost_price, Decimal('0.00'))
 
-    def test_duplicate_names_in_file_are_not_applied(self):
+    def test_duplicate_names_with_different_costs_are_not_applied(self):
         upload = self.make_xlsx([
             ['Товар только на OZON', '150.00'],
             ['Товар только на OZON', '160.00'],
@@ -162,6 +162,52 @@ class ProductCostImportAdminTests(TestCase):
         preview = self.client.session[IMPORT_PREVIEW_SESSION_KEY]
         self.assertEqual(preview['summary']['matched'], 0)
         self.assertEqual(preview['summary']['duplicate'], 2)
+        self.assertEqual(preview['summary']['skipped_duplicate'], 0)
+
+    def test_duplicate_names_with_same_cost_are_applied_once(self):
+        upload = self.make_xlsx([
+            ['Товар только на OZON', '150'],
+            ['  товар   только на ozon  ', '150,00'],
+        ])
+
+        self.client.post(
+            self.import_url,
+            {'action': 'preview', 'file': upload},
+            follow=True,
+        )
+
+        preview = self.client.session[IMPORT_PREVIEW_SESSION_KEY]
+        self.assertEqual(preview['summary']['matched'], 1)
+        self.assertEqual(preview['summary']['duplicate'], 0)
+        self.assertEqual(preview['summary']['skipped_duplicate'], 1)
+        self.assertEqual(
+            [row['status'] for row in preview['rows']],
+            ['matched', 'skipped_duplicate'],
+        )
+
+        self.client.post(self.import_url, {'action': 'apply'}, follow=True)
+
+        self.target.refresh_from_db()
+        self.assertEqual(self.target.cost_price, Decimal('150.00'))
+
+    def test_first_row_is_skipped_for_supported_cost_headers(self):
+        for cost_header in ('Себестоимость', 'Себес', 'Себ.', 'Себес., руб.', 'COST PRICE'):
+            with self.subTest(cost_header=cost_header):
+                upload = self.make_xlsx([
+                    ['Любой заголовок', cost_header],
+                    ['Товар только на OZON', '150.00'],
+                ])
+
+                self.client.post(
+                    self.import_url,
+                    {'action': 'preview', 'file': upload},
+                    follow=True,
+                )
+
+                preview = self.client.session[IMPORT_PREVIEW_SESSION_KEY]
+                self.assertEqual(preview['summary']['matched'], 1)
+                self.assertEqual(preview['summary']['invalid'], 0)
+                self.assertEqual(len(preview['rows']), 1)
 
     def test_import_can_update_zero_cost_sales_for_sold_product(self):
         sold_product = Product.objects.create(

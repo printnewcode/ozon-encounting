@@ -38,6 +38,7 @@
         Не найдено: {{ cost_import.summary.not_found|default:0 }}.
         Неоднозначно: {{ cost_import.summary.ambiguous|default:0 }}.
         Дубликатов: {{ cost_import.summary.duplicate|default:0 }}.
+        Одинаковых дублей пропущено: {{ cost_import.summary.skipped_duplicate|default:0 }}.
         Ошибок: {{ cost_import.summary.invalid|default:0 }}.
         Карточек товаров: {{ cost_import.summary.products_to_update|default:0 }}.
         Прошлых продаж с нулевой себестоимостью:
@@ -71,6 +72,7 @@
                 {% elif row.status == "not_found" %}Не найден
                 {% elif row.status == "ambiguous" %}Неоднозначно
                 {% elif row.status == "duplicate" %}Дубликат
+                {% elif row.status == "skipped_duplicate" %}Пропущен
                 {% else %}Ошибка{% endif %}
                 — {{ row.message }}
               </td>
