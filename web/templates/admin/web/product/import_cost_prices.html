@@ -1,0 +1,93 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; <a href="{% url 'admin:web_product_changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+  &rsaquo; {{ title }}
+</div>
+{% endblock %}
+
+{% block content %}
+<div id="content-main">
+  <p>
+    Обновляются только товары с остатком на OZON, нулевой себестоимостью,
+    без складского остатка и без партий. Старые продажи не изменяются.
+  </p>
+
+  {% if not cost_import %}
+    <form method="post" enctype="multipart/form-data">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="preview">
+      <fieldset class="module aligned">
+        {{ form.as_div }}
+      </fieldset>
+      <div class="submit-row">
+        <input type="submit" value="Проверить файл" class="default">
+      </div>
+    </form>
+  {% else %}
+    <div class="module">
+      <h2>Предпросмотр: {{ cost_import.file_name }}</h2>
+      <p>
+        Готово к обновлению: <strong>{{ cost_import.summary.matched|default:0 }}</strong>.
+        Защищено: {{ cost_import.summary.protected|default:0 }}.
+        Не найдено: {{ cost_import.summary.not_found|default:0 }}.
+        Неоднозначно: {{ cost_import.summary.ambiguous|default:0 }}.
+        Дубликатов: {{ cost_import.summary.duplicate|default:0 }}.
+        Ошибок: {{ cost_import.summary.invalid|default:0 }}.
+      </p>
+    </div>
+
+    <div class="results">
+      <table id="result_list">
+        <thead>
+          <tr>
+            <th>Строка</th>
+            <th>Название</th>
+            <th>Артикул</th>
+            <th>Себестоимость</th>
+            <th>Результат</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in cost_import.rows %}
+            <tr class="{% cycle 'row1' 'row2' %}">
+              <td>{{ row.row_number }}</td>
+              <td>{{ row.name }}</td>
+              <td>{{ row.article|default:"—" }}</td>
+              <td>{{ row.cost_price }}</td>
+              <td>
+                {% if row.status == "matched" %}Будет обновлён
+                {% elif row.status == "protected" %}Защищён
+                {% elif row.status == "not_found" %}Не найден
+                {% elif row.status == "ambiguous" %}Неоднозначно
+                {% elif row.status == "duplicate" %}Дубликат
+                {% else %}Ошибка{% endif %}
+                — {{ row.message }}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if cost_import.summary.matched %}
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="apply">
+        <div class="submit-row">
+          <a href="{% url 'admin:web_product_import_cost_prices' %}" class="closelink">Выбрать другой файл</a>
+          <input
+            type="submit"
+            value="Обновить {{ cost_import.summary.matched }} товаров"
+            class="default"
+          >
+        </div>
+      </form>
+    {% endif %}
+  {% endif %}
+</div>
+{% endblock %}

@@ -62,3 +62,20 @@ class SalesReportPeriodForm(forms.Form):
             raise ValidationError('Дата начала периода не может быть позже даты окончания.')
 
         return cleaned_data
+
+
+class CostPriceImportForm(forms.Form):
+    file = forms.FileField(
+        label='Файл с названиями и себестоимостью',
+        help_text='Два столбца: название товара и себестоимость. Поддерживаются .xlsx и .csv.',
+        widget=forms.FileInput(attrs={'accept': '.xlsx,.csv'}),
+    )
+
+    def clean_file(self):
+        uploaded_file = self.cleaned_data['file']
+        extension = Path(uploaded_file.name).suffix.lower()
+        if extension not in {'.xlsx', '.csv'}:
+            raise ValidationError('Поддерживаются только файлы .xlsx и .csv.')
+        if uploaded_file.size > 5 * 1024 * 1024:
+            raise ValidationError('Размер файла не должен превышать 5 МБ.')
+        return uploaded_file

@@ -1,0 +1,12 @@
+{% extends "admin/change_list.html" %}
+
+{% block object-tools-items %}
+  {% if perms.web.change_product %}
+    <li>
+      <a href="{% url 'admin:web_product_import_cost_prices' %}" class="addlink">
+        Импорт себестоимости OZON
+      </a>
+    </li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}
