@@ -44,6 +44,12 @@ class ProductCostImportAdminTests(TestCase):
             income=Decimal('200.00'),
             cost_price=Decimal('0.00'),
         )
+        self.priced_sale = SaleRecord.objects.create(
+            product=self.target,
+            sale_type='ozon',
+            income=Decimal('250.00'),
+            cost_price=Decimal('80.00'),
+        )
         self.import_url = reverse('admin:web_product_import_cost_prices')
 
     def make_xlsx(self, rows):
@@ -88,18 +94,27 @@ class ProductCostImportAdminTests(TestCase):
         self.assertEqual(preview['summary']['matched'], 1)
         self.assertEqual(preview['summary']['protected'], 1)
         self.assertEqual(preview['summary']['not_found'], 1)
+        self.assertEqual(preview['summary']['past_sales_to_update'], 1)
 
-        response = self.client.post(self.import_url, {'action': 'apply'}, follow=True)
+        response = self.client.post(
+            self.import_url,
+            {'action': 'apply', 'apply_to_past_sales': '1'},
+            follow=True,
+        )
 
         self.assertEqual(response.status_code, 200)
         self.target.refresh_from_db()
         self.warehouse_product.refresh_from_db()
         self.old_sale.refresh_from_db()
+        self.priced_sale.refresh_from_db()
         self.assertEqual(self.target.cost_price, Decimal('150.50'))
         self.assertEqual(self.target.purchase_price, Decimal('150.50'))
         self.assertEqual(self.target.delivery_cost, Decimal('0.00'))
         self.assertEqual(self.warehouse_product.cost_price, Decimal('120.00'))
-        self.assertEqual(self.old_sale.cost_price, Decimal('0.00'))
+        self.assertEqual(self.old_sale.cost_price, Decimal('150.50'))
+        self.assertEqual(self.old_sale.profit, Decimal('49.50'))
+        self.assertEqual(self.priced_sale.cost_price, Decimal('80.00'))
+        self.assertEqual(self.priced_sale.profit, Decimal('170.00'))
         self.assertNotIn(IMPORT_PREVIEW_SESSION_KEY, self.client.session)
         self.assertTrue(
             LogEntry.objects.filter(
@@ -122,6 +137,16 @@ class ProductCostImportAdminTests(TestCase):
         self.assertContains(response, 'изменился после предпросмотра')
         self.assertIn(IMPORT_PREVIEW_SESSION_KEY, self.client.session)
 
+    def test_unchecked_option_keeps_past_sales_unchanged(self):
+        self.preview()
+
+        self.client.post(self.import_url, {'action': 'apply'}, follow=True)
+
+        self.target.refresh_from_db()
+        self.old_sale.refresh_from_db()
+        self.assertEqual(self.target.cost_price, Decimal('150.50'))
+        self.assertEqual(self.old_sale.cost_price, Decimal('0.00'))
+
     def test_duplicate_names_in_file_are_not_applied(self):
         upload = self.make_xlsx([
             ['Товар только на OZON', '150.00'],
@@ -137,3 +162,52 @@ class ProductCostImportAdminTests(TestCase):
         preview = self.client.session[IMPORT_PREVIEW_SESSION_KEY]
         self.assertEqual(preview['summary']['matched'], 0)
         self.assertEqual(preview['summary']['duplicate'], 2)
+
+    def test_import_can_update_zero_cost_sales_for_sold_product(self):
+        sold_product = Product.objects.create(
+            article='SOLD-OZON',
+            name='Проданный товар OZON',
+            quantity=0,
+            ozon_quantity=0,
+            purchase_price=Decimal('0.00'),
+            delivery_cost=Decimal('0.00'),
+            status='sold',
+        )
+        ozon_sale = SaleRecord.objects.create(
+            product=sold_product,
+            sale_type='ozon',
+            income=Decimal('180.00'),
+            cost_price=Decimal('0.00'),
+        )
+        free_sale = SaleRecord.objects.create(
+            product=sold_product,
+            sale_type='free',
+            income=Decimal('190.00'),
+            cost_price=Decimal('0.00'),
+        )
+        upload = self.make_xlsx([['Проданный товар OZON', '75.00']])
+
+        self.client.post(
+            self.import_url,
+            {'action': 'preview', 'file': upload},
+            follow=True,
+        )
+
+        preview = self.client.session[IMPORT_PREVIEW_SESSION_KEY]
+        self.assertEqual(preview['summary']['products_to_update'], 0)
+        self.assertEqual(preview['summary']['past_sales_to_update'], 1)
+
+        self.client.post(
+            self.import_url,
+            {'action': 'apply', 'apply_to_past_sales': '1'},
+            follow=True,
+        )
+
+        sold_product.refresh_from_db()
+        ozon_sale.refresh_from_db()
+        free_sale.refresh_from_db()
+        self.assertEqual(sold_product.cost_price, Decimal('0.00'))
+        self.assertEqual(sold_product.status, 'sold')
+        self.assertEqual(ozon_sale.cost_price, Decimal('75.00'))
+        self.assertEqual(ozon_sale.profit, Decimal('105.00'))
+        self.assertEqual(free_sale.cost_price, Decimal('0.00'))

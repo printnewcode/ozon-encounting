@@ -13,8 +13,9 @@
 {% block content %}
 <div id="content-main">
   <p>
-    Обновляются только товары с остатком на OZON, нулевой себестоимостью,
-    без складского остатка и без партий. Старые продажи не изменяются.
+    Карточка товара обновляется только при наличии остатка на OZON, нулевой себестоимости,
+    отсутствии складского остатка и партий. Для проданных товаров можно отдельно обновить
+    прошлые продажи OZON с нулевой себестоимостью; статус и остатки товара не меняются.
   </p>
 
   {% if not cost_import %}
@@ -38,6 +39,9 @@
         Неоднозначно: {{ cost_import.summary.ambiguous|default:0 }}.
         Дубликатов: {{ cost_import.summary.duplicate|default:0 }}.
         Ошибок: {{ cost_import.summary.invalid|default:0 }}.
+        Карточек товаров: {{ cost_import.summary.products_to_update|default:0 }}.
+        Прошлых продаж с нулевой себестоимостью:
+        <strong>{{ cost_import.summary.past_sales_to_update|default:0 }}</strong>.
       </p>
     </div>
 
@@ -49,6 +53,7 @@
             <th>Название</th>
             <th>Артикул</th>
             <th>Себестоимость</th>
+            <th>Прошлых продаж</th>
             <th>Результат</th>
           </tr>
         </thead>
@@ -59,6 +64,7 @@
               <td>{{ row.name }}</td>
               <td>{{ row.article|default:"—" }}</td>
               <td>{{ row.cost_price }}</td>
+              <td>{{ row.past_sales_count|default:0 }}</td>
               <td>
                 {% if row.status == "matched" %}Будет обновлён
                 {% elif row.status == "protected" %}Защищён
@@ -78,11 +84,19 @@
       <form method="post">
         {% csrf_token %}
         <input type="hidden" name="action" value="apply">
+        <fieldset class="module aligned">
+          <div class="form-row">
+            <label>
+              <input type="checkbox" name="apply_to_past_sales" value="1" checked>
+              Применить себестоимость к прошлым продажам OZON, где она равна нулю
+            </label>
+          </div>
+        </fieldset>
         <div class="submit-row">
           <a href="{% url 'admin:web_product_import_cost_prices' %}" class="closelink">Выбрать другой файл</a>
           <input
             type="submit"
-            value="Обновить {{ cost_import.summary.matched }} товаров"
+            value="Применить импорт"
             class="default"
           >
         </div>

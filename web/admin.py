@@ -64,24 +64,42 @@ class ProductAdmin(admin.ModelAdmin):
                     return redirect(request.path)
                 try:
                     with transaction.atomic():
-                        updates = apply_cost_price_import(cost_import)
-                        for product, row in updates:
+                        updates = apply_cost_price_import(
+                            cost_import,
+                            apply_to_past_sales=request.POST.get('apply_to_past_sales') == '1',
+                        )
+                        for update in updates:
+                            product = update['product']
+                            row = update['row']
+                            changes = []
+                            if update['product_updated']:
+                                changes.append(
+                                    f'себестоимость товара {row["old_cost_price"]} → {row["cost_price"]}'
+                                )
+                            if update['sales_updated']:
+                                changes.append(
+                                    f'обновлено прошлых продаж OZON: {update["sales_updated"]}'
+                                )
                             self.log_change(
                                 request,
                                 product,
                                 (
                                     f'Импорт себестоимости OZON из файла «{cost_import["file_name"]}»: '
-                                    f'{row["old_cost_price"]} → {row["cost_price"]}. '
-                                    'Старые продажи не изменены.'
+                                    f'{", ".join(changes)}.'
                                 ),
                             )
                 except CostPriceImportError as exc:
                     self.message_user(request, str(exc), level=messages.ERROR)
                 else:
+                    products_updated = sum(update['product_updated'] for update in updates)
+                    sales_updated = sum(update['sales_updated'] for update in updates)
                     del request.session[IMPORT_PREVIEW_SESSION_KEY]
                     self.message_user(
                         request,
-                        f'Себестоимость обновлена для {len(updates)} товаров OZON.',
+                        (
+                            f'Обновлено карточек товаров: {products_updated}; '
+                            f'прошлых продаж OZON: {sales_updated}.'
+                        ),
                         level=messages.SUCCESS,
                     )
                     return redirect(reverse('admin:web_product_changelist'))

@@ -6,11 +6,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, F, Q
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
-from web.models import Product
+from web.models import Product, SaleRecord
 
 
 ALLOWED_EXTENSIONS = {'.csv', '.xlsx'}
@@ -145,18 +145,26 @@ def build_import_preview(uploaded_file) -> dict:
             name_counts[normalized_name] = name_counts.get(normalized_name, 0) + 1
     duplicate_names = {name for name, count in name_counts.items() if count > 1}
 
-    targets = (
-        Product.objects.filter(
-            ozon_quantity__gt=0,
-            quantity=0,
-            cost_price=Decimal('0.00'),
+    candidates = Product.objects.annotate(
+        batch_count=Count('batches', distinct=True),
+        zero_ozon_sales_count=Count(
+            'sales',
+            filter=Q(sales__sale_type='ozon') & (
+                Q(sales__cost_price=Decimal('0.00')) | Q(sales__cost_price__isnull=True)
+            ),
+            distinct=True,
         )
-        .annotate(batch_count=Count('batches'))
-        .filter(batch_count=0)
     )
-    targets_by_name = {}
-    for product in targets:
-        targets_by_name.setdefault(normalize_product_name(product.name), []).append(product)
+    candidates_by_name = {}
+    for product in candidates:
+        product.update_product_cost = (
+            product.ozon_quantity > 0
+            and product.quantity == 0
+            and product.cost_price == Decimal('0.00')
+            and product.batch_count == 0
+        )
+        if product.update_product_cost or product.zero_ozon_sales_count > 0:
+            candidates_by_name.setdefault(normalize_product_name(product.name), []).append(product)
 
     all_products_by_name = {}
     for product in Product.objects.only('id', 'article', 'name'):
@@ -177,14 +185,21 @@ def build_import_preview(uploaded_file) -> dict:
             preview_rows.append(row)
             continue
 
-        matches = targets_by_name.get(normalized_name, [])
+        matches = candidates_by_name.get(normalized_name, [])
         if len(matches) == 1:
             product = matches[0]
+            actions = []
+            if product.update_product_cost:
+                actions.append('карточка товара')
+            if product.zero_ozon_sales_count:
+                actions.append(f'прошлых продаж: {product.zero_ozon_sales_count}')
             row.update(
                 status='matched',
-                message='Готов к обновлению.',
+                message=f'Будет обновлено: {", ".join(actions)}.',
                 product_id=product.id,
                 article=product.article,
+                update_product=product.update_product_cost,
+                past_sales_count=product.zero_ozon_sales_count,
                 old_purchase_price=str(product.purchase_price),
                 old_delivery_cost=str(product.delivery_cost),
                 old_cost_price=str(product.cost_price),
@@ -212,6 +227,12 @@ def build_import_preview(uploaded_file) -> dict:
         status: sum(row.get('status') == status for row in preview_rows)
         for status in ('matched', 'protected', 'not_found', 'ambiguous', 'duplicate', 'invalid')
     }
+    summary['products_to_update'] = sum(
+        bool(row.get('update_product')) for row in preview_rows if row.get('status') == 'matched'
+    )
+    summary['past_sales_to_update'] = sum(
+        int(row.get('past_sales_count') or 0) for row in preview_rows if row.get('status') == 'matched'
+    )
     return {
         'file_name': Path(uploaded_file.name).name[:255],
         'rows': preview_rows,
@@ -229,10 +250,12 @@ def product_is_import_target(product: Product) -> bool:
 
 
 @transaction.atomic
-def apply_cost_price_import(preview: dict) -> list[tuple[Product, dict]]:
+def apply_cost_price_import(preview: dict, apply_to_past_sales: bool = False) -> list[dict]:
     matched_rows = [row for row in preview.get('rows', []) if row.get('status') == 'matched']
     if not matched_rows:
         raise CostPriceImportError('Нет товаров, готовых к обновлению.')
+    if not apply_to_past_sales and not any(row.get('update_product') for row in matched_rows):
+        raise CostPriceImportError('Включите обновление прошлых продаж или загрузите другой файл.')
 
     products = {
         product.id: product
@@ -245,7 +268,12 @@ def apply_cost_price_import(preview: dict) -> list[tuple[Product, dict]]:
         if (
             product is None
             or normalize_product_name(product.name) != row['normalized_name']
-            or str(product.purchase_price) != row['old_purchase_price']
+        ):
+            raise CostPriceImportError(
+                f'Товар «{row["name"]}» изменился после предпросмотра. Создайте импорт заново.'
+            )
+        if row.get('update_product') and (
+            str(product.purchase_price) != row['old_purchase_price']
             or str(product.delivery_cost) != row['old_delivery_cost']
             or str(product.cost_price) != row['old_cost_price']
             or not product_is_import_target(product)
@@ -254,9 +282,39 @@ def apply_cost_price_import(preview: dict) -> list[tuple[Product, dict]]:
                 f'Товар «{row["name"]}» изменился после предпросмотра. Создайте импорт заново.'
             )
 
+    results = []
     for row in matched_rows:
         product = products[row['product_id']]
-        product.purchase_price = Decimal(row['cost_price'])
-        product.delivery_cost = Decimal('0.00')
-        product.save()
-    return [(products[row['product_id']], row) for row in matched_rows]
+        new_cost_price = Decimal(row['cost_price'])
+        product_updated = False
+        if row.get('update_product'):
+            product.purchase_price = new_cost_price
+            product.delivery_cost = Decimal('0.00')
+            product.save()
+            product_updated = True
+
+        sales_updated = 0
+        if apply_to_past_sales:
+            sale_ids = list(
+                SaleRecord.objects.select_for_update()
+                .filter(product=product, sale_type='ozon')
+                .filter(Q(cost_price=Decimal('0.00')) | Q(cost_price__isnull=True))
+                .values_list('id', flat=True)
+            )
+            if sale_ids:
+                sales_updated = SaleRecord.objects.filter(id__in=sale_ids).update(
+                    cost_price=new_cost_price,
+                    profit=F('income') - new_cost_price,
+                )
+
+        if product_updated or sales_updated:
+            results.append({
+                'product': product,
+                'row': row,
+                'product_updated': product_updated,
+                'sales_updated': sales_updated,
+            })
+
+    if not results:
+        raise CostPriceImportError('Нет данных, которые можно обновить.')
+    return results
