@@ -1,10 +1,40 @@
 from pathlib import Path
 
 from django import forms
+from django.contrib.auth.forms import AuthenticationForm
 from django.core.exceptions import ValidationError
 
 
 VALID_UPLOAD_EXTENSIONS = {'.xlsx', '.xls', '.csv'}
+
+
+class SuperuserAuthenticationForm(AuthenticationForm):
+    error_messages = {
+        'invalid_login': 'Неверный логин или пароль администратора.',
+        'inactive': 'Неверный логин или пароль администратора.',
+    }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['username'].label = 'Логин'
+        self.fields['username'].widget.attrs.update({
+            'class': 'form-control',
+            'autocomplete': 'username',
+            'placeholder': 'Логин администратора',
+        })
+        self.fields['username'].error_messages['required'] = 'Введите логин.'
+        self.fields['password'].label = 'Пароль'
+        self.fields['password'].widget.attrs.update({
+            'class': 'form-control',
+            'autocomplete': 'current-password',
+            'placeholder': 'Введите пароль',
+        })
+        self.fields['password'].error_messages['required'] = 'Введите пароль.'
+
+    def confirm_login_allowed(self, user):
+        super().confirm_login_allowed(user)
+        if not user.is_superuser:
+            raise ValidationError(self.error_messages['invalid_login'], code='invalid_login')
 
 
 def validate_file_extension(value) -> None:

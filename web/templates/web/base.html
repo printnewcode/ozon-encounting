@@ -11,8 +11,9 @@
     <link rel="stylesheet" href="{% static 'web/css/base.css' %}">
     {% block extra_css %}{% endblock %}
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
 
+    {% block sidebar %}
     <aside class="sidebar">
         <a class="sidebar-brand" href="{% url 'product_list' %}">
             <div class="logo-icon">📦</div>
@@ -42,9 +43,30 @@
                 <span class="nav-icon">📦</span> Учет остатков
             </a>
         </nav>
+        {% if user.is_authenticated %}
+        <div class="sidebar-account">
+            <div class="account-name" title="{{ user.get_username }}">{{ user.get_username }}</div>
+            <form method="post" action="{% url 'logout' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn-secondary-saas">Выйти</button>
+            </form>
+        </div>
+        {% endif %}
     </aside>
+    {% endblock %}
 
-    <main class="main-content">
+    <main class="{% block main_class %}main-content{% endblock %}">
+        {% block mobile_account %}
+        {% if user.is_authenticated %}
+        <div class="mobile-account">
+            <span class="account-name">{{ user.get_username }}</span>
+            <form method="post" action="{% url 'logout' %}">
+                {% csrf_token %}
+                <button type="submit" class="btn-secondary-saas">Выйти</button>
+            </form>
+        </div>
+        {% endif %}
+        {% endblock %}
         {% if messages %}
         <div class="message-stack" aria-live="polite" aria-atomic="true">
             {% for message in messages %}

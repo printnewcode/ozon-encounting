@@ -17,6 +17,11 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path, include
 
+from web.forms import SuperuserAuthenticationForm
+
+admin.site.login_form = SuperuserAuthenticationForm
+admin.site.login_template = 'web/login.html'
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('', include('web.urls')),

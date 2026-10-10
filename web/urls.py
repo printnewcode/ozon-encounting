@@ -1,9 +1,17 @@
+from django.contrib.auth.decorators import login_not_required
+from django.contrib.auth.views import LoginView, LogoutView
 from django.urls import path
 
 from . import views
+from .forms import SuperuserAuthenticationForm
 
 
 urlpatterns = [
+    path('login/', LoginView.as_view(
+        template_name='web/login.html',
+        authentication_form=SuperuserAuthenticationForm,
+    ), name='login'),
+    path('logout/', login_not_required(LogoutView.as_view()), name='logout'),
     path('upload/supply/', views.upload_supply, name='upload_supply'),
     path('upload/sales/', views.upload_sales, name='upload_sales'),
     path('sync/ozon/', views.sync_ozon, name='sync_ozon'),
